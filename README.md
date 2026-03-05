@@ -4,7 +4,7 @@ A Cocoon FE theme previewer.
 A work in progress theme previewer for CocoonFE. Please excuse the lackluster read me segment while I get this set up!
 
 Instructions:
-Download and run app.py.
+Download repository and run Silk Preview.py.
 
 | Key | Control |
 | --- | --- |
