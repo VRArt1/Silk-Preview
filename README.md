@@ -1,5 +1,5 @@
 # Silk Preview
-A Cocoon FE theme previewer.
+A vibe coded Cocoon FE theme previewer.
 
 A work in progress theme previewer for CocoonFE. Please excuse the lackluster read me segment while I get this set up!
 
