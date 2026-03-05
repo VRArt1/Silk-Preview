@@ -6,7 +6,6 @@ A work in progress theme previewer for CocoonFE. Please excuse the lackluster re
 Instructions:
 Download and run app.py.
 
-Controls:
 | Key | Control |
 | --- | --- |
 | Tab | Frame Cycle |
