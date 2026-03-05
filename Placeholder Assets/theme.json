@@ -1,0 +1,9 @@
+{
+  "name": "Placeholder Assets",
+  "author": "",
+  "version": "0.0.0",
+  "description": "Placeholder assets for initial load and fallback.",
+  "credits": "",
+  "wallpaper_main": "main.png",
+  "wallpaper_external": "external.png"
+}
