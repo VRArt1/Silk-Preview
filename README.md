@@ -20,5 +20,6 @@ Controls:
 | - | Zoom Out |
 
 CocoonFE by Moth
+
 Caritcon Icon Overlays by Víctor Redondo / V de Vaporeta
 
