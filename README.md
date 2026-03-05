@@ -18,6 +18,8 @@ Download and run app.py.
 | + | Zoom In |
 | - | Zoom Out |
 
+Bonus instruction: You can right click on the default folder to change its color!
+
 CocoonFE by Moth
 
 Caritcon Icon Overlays by Víctor Redondo / V de Vaporeta
