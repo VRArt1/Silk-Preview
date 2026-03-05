@@ -7,15 +7,18 @@ Instructions:
 Download and run app.py.
 
 Controls:
-Tab		    Frame Cycle
-Shift Tab	Reverse Frame Cycle
-L	      	Load Theme
-R	      	Refresh
-U	      	UI toggle
-S	      	Screenshot
-Ctrl S		Screenshot Device Only
-+		      Zoom In
--		      Zoom Out
+| Key | Control |
+| --- | --- |
+| Tab | Frame Cycle |
+| Shift Tab | Reverse Frame Cycle |
+| L | Load Theme |
+| R | Refresh |
+| U | UI Toggle |
+| S | Screenshot |
+| Ctrl S | Screenshot Device Only |
+| + | Zoom In |
+| - | Zoom Out |
 
 CocoonFE by Moth
 Caritcon Icon Overlays by Víctor Redondo / V de Vaporeta
+
