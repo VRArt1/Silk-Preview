@@ -1,6 +1,7 @@
 # Silk Preview
 <div align="center">
-![banner.png](https://github.com/VRArt1/Silk-Preview/blob/main/banner.png "Banner")
+<img width="960" height="480" alt="banner" src="https://github.com/user-attachments/assets/8cd459e3-0d86-4e38-87c4-8bebfc1619ce" />
+
 **A Theme Previewer for CocoonFE**
 
 *A work-in-progress vibe coded theme previewer for Cocoon FE.*
