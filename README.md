@@ -62,6 +62,7 @@ Right click on default folder to change colors.
 ### How To Run
 
 Download the entire repository and run Silk Preview.py. It will install the necessary dependencies before launching.
+Alternatively install the requirements and run app.py.
 
 ### Dependencies
 
