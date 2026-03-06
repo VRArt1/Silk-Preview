@@ -1,6 +1,6 @@
 # Silk Preview
 <div align="center">
-<img width="960" height="480" alt="banner" src="https://github.com/user-attachments/assets/8cd459e3-0d86-4e38-87c4-8bebfc1619ce" />
+<img width="960" height="480" alt="banner" src="https://raw.githubusercontent.com/VRArt1/Silk-Preview/refs/heads/main/banner.png" />
 
 **A Theme Previewer for CocoonFE**
 
