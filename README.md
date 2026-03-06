@@ -39,7 +39,8 @@ The intent of this project is to be an accurate theme previewer for the use of g
 - **Icons On Folders**  
 - **Theme Mode** (Light/Dark/Oled/System)  
 - **Append Apply Mode**  
-- **Screen Swapping**  
+- **Screen Swapping**
+- **One Screen Mode**  
 
 ### Controls
 
