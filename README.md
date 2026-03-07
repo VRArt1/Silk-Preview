@@ -39,7 +39,8 @@ The intent of this project is to be an accurate theme previewer for the use of g
 - **Icons On Folders**  
 - **Theme Mode** (Light/Dark/Oled/System)  
 - **Append Apply Mode**  
-- **Screen Swapping**  
+- **Screen Swapping**
+- **One Screen Mode**  
 
 ### Controls
 
@@ -61,6 +62,7 @@ Right click on default folder to change colors.
 ### How To Run
 
 Download the entire repository and run Silk Preview.py. It will install the necessary dependencies before launching.
+Alternatively install the requirements and run app.py.
 
 ### Dependencies
 
