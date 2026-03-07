@@ -1,0 +1,3 @@
+Place game preview images within this folder! If you include the appropriate platform name at the beginning the software will attach it to the relevant console. Use underscores to define multiple variants.
+
+E.g. gba.png or gba_red.png will randomly be selected to go to gba icon overlays.
