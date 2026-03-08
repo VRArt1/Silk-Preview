@@ -20,14 +20,16 @@ The intent of this project is to be an accurate theme previewer for the use of g
 - **Remember Theme** For ease of development the software can remember and reload into the last opened theme folder.
 - **Functional Zoom** Replicates native zoom functionality to display more slots.
 - **Functional Select** Allows for either clicking or keyboard based movement to select different grid slots to preview item select and relevant heroes/logos on the top screen.
+- **Drag and Drop** Drag in theme folders to load them.
 
 ### Cocoon Supported
 
 - **Theme.json + Preview** All fields and images populate within the preview panel. Colors include preview circles and is collapsible .
 - **Wallpapers** Supports both screens both animated and static. Support for wallpaper aliases and asigning based on theme.json. Video currently only supports first frame.
 - **Smart Folders + Smart Folders/By Platform**  Support for hero, icon, and logo. Properly displayed when selected like on native. (Logo sizing currently inaccurate).
-- **Icon Overlays** Support for mask and overlay. Populated with random image from "assets/games"; insert images thre to be randomly chosen. Matching names to console will be chosen first for consoles, allow for multiple options using underscores. I.E. gba.png & gba_blue.png will be matched to gba icon overlay if exists.
+- **Icon Overlays** Support for mask and overlay. Populated with random image from "assets/games"; insert images there to be randomly chosen. Matching names to console will be chosen first for consoles, allows for multiple options using underscores. I.E. gba.gif & gba_blue.png will be matched to gba icon overlay if exists.
 - **Default Folder Colors** Right click on the default folder to change its color.
+- **Single Screen Mode**  Beyond the Ayn Thor you are also able to preview Cocoon themes on an Odin3! Allows for both dual and single screen modes.
 
 ### Cocoon Not Supported
 
@@ -37,10 +39,8 @@ The intent of this project is to be an accurate theme previewer for the use of g
 - **Hero Masking**  
 - **Hero/Logo Animation**  
 - **Icons On Folders**  
-- **Theme Mode** (Light/Dark/Oled/System)  
 - **Append Apply Mode**  
 - **Screen Swapping**
-- **One Screen Mode**  
 
 ### Controls
 
@@ -50,7 +50,6 @@ The intent of this project is to be an accurate theme previewer for the use of g
 | Shift Tab | Reverse Frame Cycle |
 | L | Load Theme |
 | R | Refresh |
-| U | UI Toggle |
 | S | Screenshot |
 | Ctrl S | Screenshot Device Only |
 | + | Zoom In |
@@ -68,6 +67,7 @@ Alternatively install the requirements and run app.py.
 
 - **Pillow**  
 - **av + ffmpeg**
+- **tkinterdnd2**  
 
 ## Support
 
