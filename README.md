@@ -29,7 +29,7 @@ The intent of this project is to be an accurate theme previewer for the use of g
 - **Smart Folders + Smart Folders/By Platform**  Support for hero, icon, and logo. Properly displayed when selected like on native. (Logo sizing currently inaccurate).
 - **Icon Overlays** Support for mask and overlay. Populated with random image from "assets/games"; insert images there to be randomly chosen. Matching names to console will be chosen first for consoles, allows for multiple options using underscores. I.E. gba.gif & gba_blue.png will be matched to gba icon overlay if exists.
 - **Default Folder Colors** Right click on the default folder to change its color.
-- **Single Screen Mode**  Beyond the Ayn Thor you are also able to preview Cocoon themes on an Odin3! Allows for both dual and single screen modes.
+- **Single Screen Mode**  Beyond the Ayn Thor you are also able to preview Cocoon themes on an Odin3 or RP6! Allows for both dual and single screen modes and easy setup of new device bezels!
 
 ### Cocoon Not Supported
 
