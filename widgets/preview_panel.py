@@ -1,4 +1,3 @@
-from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk, ImageDraw
@@ -17,10 +16,20 @@ URL_RE = re.compile(r"^https?://")
 
 
 class PreviewPanel(ttk.Frame):
+    # Field order for display
+    FIELD_ORDER = [
+        "name", "author", "version", "description", "credits", "website",
+        "theme_mode", "color_scheme",
+        "wallpaper_main", "wallpaper_external",
+        "music_mode", "music_playback_mode", "music_playlist", "music_time_schedule",
+        "sfx_volume", "music_volume"
+    ]
+
     def __init__(self, parent, renderer, width=300):
         super().__init__(parent, width=width)
         self.renderer = renderer
         self.preview_img_tk = None
+        self._theme_data_hash = None  # Track if theme data changed
 
         self.grid_propagate(False)
         self.columnconfigure(0, weight=1)
@@ -64,7 +73,7 @@ class PreviewPanel(ttk.Frame):
 
         self.content_frame.bind(
             "<Configure>",
-            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+            self._on_content_configure
         )
         self.canvas.bind(
             "<Configure>",
@@ -75,6 +84,13 @@ class PreviewPanel(ttk.Frame):
         self._bind_mousewheel(self.canvas)
 
         self.load_theme_info()
+    
+    def _on_content_configure(self, event):
+        """Update scrollregion, but debounce during rapid events."""
+        # Get the bbox - if None, skip update
+        bbox = self.canvas.bbox("all")
+        if bbox:
+            self.canvas.configure(scrollregion=bbox)
 
     # ------------------------------
     # Mouse wheel scrolling
@@ -85,17 +101,37 @@ class PreviewPanel(ttk.Frame):
         widget.bind_all("<Button-5>", lambda e: self._on_mousewheel(e, widget))
 
     def _on_mousewheel(self, event, widget):
+        # Get current scroll position
+        scroll_pos = widget.yview()
+        
         if event.num == 5 or event.delta < 0:
-            widget.yview_scroll(1, "units")
+            # Scrolling down - only if not at bottom
+            if scroll_pos[1] < 1.0:
+                widget.yview_scroll(1, "units")
         elif event.num == 4 or event.delta > 0:
-            widget.yview_scroll(-1, "units")
+            # Scrolling up - only if not at top
+            if scroll_pos[0] > 0.0:
+                widget.yview_scroll(-1, "units")
 
     # ------------------------------
     # Theme loading
     # ------------------------------
     def load_theme_info(self):
-        self._clear_content()
         theme = self.renderer.theme_data or {}
+        
+        # Only rebuild if theme data actually changed
+        import json
+        try:
+            new_hash = hash(json.dumps(theme, sort_keys=True, default=str))
+        except (TypeError, ValueError):
+            new_hash = None
+        
+        # Skip rebuild entirely if hash matches - keep content visible
+        if new_hash == self._theme_data_hash:
+            return
+        
+        self._theme_data_hash = new_hash
+        self._clear_content()
 
         # Preview image
         img = getattr(self.renderer, "preview_image", None)
@@ -109,10 +145,11 @@ class PreviewPanel(ttk.Frame):
         else:
             self.preview_image_label.configure(image="", text="No Preview")
 
-        # Render JSON
-        self._render_dict(theme, self.content_frame)
+        # Render JSON with ordered fields
+        self._render_dict_ordered(theme, self.content_frame)
 
     def refresh(self):
+        self._theme_data_hash = None  # Force rebuild
         self.load_theme_info()
 
     # ------------------------------
@@ -121,6 +158,28 @@ class PreviewPanel(ttk.Frame):
     def _clear_content(self):
         for child in self.content_frame.winfo_children():
             child.destroy()
+
+    def _render_dict_ordered(self, data: dict, parent, indent=0):
+        """Render dict with specific field order."""
+        rendered_keys = set()
+        
+        # First render fields in the specified order
+        for key in self.FIELD_ORDER:
+            if key in data:
+                rendered_keys.add(key)
+                value = data[key]
+                if isinstance(value, dict):
+                    self._render_collapsible_section(key, value, parent, indent)
+                else:
+                    self._render_row(key, value, parent, indent)
+        
+        # Then render any remaining fields not in the order list
+        for key, value in data.items():
+            if key not in rendered_keys:
+                if isinstance(value, dict):
+                    self._render_collapsible_section(key, value, parent, indent)
+                else:
+                    self._render_row(key, value, parent, indent)
 
     def _render_dict(self, data: dict, parent, indent=0):
         for key, value in data.items():
