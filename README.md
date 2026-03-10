@@ -18,22 +18,24 @@ The intent of this project is to be an accurate theme previewer for the use of g
 ## Features
 ### Software Specific
 
-- **Device Colors** Allows for the choosing of all four Ayn Thor device colors with a bonus slot premade for custom designs.
-- **Screenshots** Allows for screenshots of the device and without background cropped for sharing or use in theme display. Ctrl click for transparent cropped.
-- **Empty Slots** Toggle for displaying empty slots.
-- **Remember Theme** For ease of development the software can remember and reload into the last opened theme folder.
-- **Functional Zoom** Replicates native zoom functionality to display more slots.
-- **Functional Select** Allows for either clicking or keyboard based movement to select different grid slots to preview item select and relevant heroes/logos on the top screen.
-- **Drag and Drop** Drag in theme folders to load them.
+- **Bezel Edit Mode** Allows for setup of custom bezels using a built in editor. Completed bezels can be shared by sharing the folder containing the images and device.json file.
+- **Screenshots** Allows for screenshots of the device for sharing or use in theme display. Ctrl click for transparent cropped variant.
+- **Remember Last Theme** For ease of development the software can remember and reload into the last opened theme folder.
+- **Drag and Drop** Drag in theme folders to load them more easily.  
 
 ### Cocoon Supported
 
-- **Theme.json + Preview** All fields and images populate within the preview panel. Colors include preview circles and is collapsible .
+- **Theme.json + Preview** All fields and images populate within the preview panel following the order shown within the wiki. Colors include preview circles and is collapsible .
 - **Wallpapers** Supports both screens both animated and static. Support for wallpaper aliases and asigning based on theme.json. Video currently only supports first frame.
 - **Smart Folders + Smart Folders/By Platform**  Support for hero, icon, and logo. Properly displayed when selected like on native. (Logo sizing currently inaccurate).
 - **Icon Overlays** Support for mask and overlay. Populated with random image from "assets/games"; insert images there to be randomly chosen. Matching names to console will be chosen first for consoles, allows for multiple options using underscores. I.E. gba.gif & gba_blue.png will be matched to gba icon overlay if exists.
+- **Apps Dock** Similar to game images for icon overlays there is an apps folder for populating image that'll be randomly chosen from to fill your app dock. Images will automatically be masked into circles.
 - **Default Folder Colors** Right click on the default folder to change its color.
-- **Single Screen Mode**  Beyond the Ayn Thor you are also able to preview Cocoon themes on an Odin3 or RP6! Allows for both dual and single screen modes and easy setup of new device bezels!
+- **Logo Size** Supports logo sizing as per Cocoon range.
+- **Zoom** Functional zoom to display more slots.
+- **Select** Allows for either clicking or keyboard based movement to select different grid slots to preview item select and relevant heroes/logos on the top screen. Allows for complete grid navigation beyond initial page.
+- **Single Screen Mode**  Beyond dual screen devices like the AYN Thor you are also able to preview Cocoon themes on single screen devices like the Odin3 or RP6! Allows for both dual and single screen modes on single screen devices!
+- **Toggles** Supports multiple display element toggles: dock background, apps, empty apps, empty slots, corner hints.
 
 ### Cocoon Not Supported
 
@@ -58,13 +60,14 @@ The intent of this project is to be an accurate theme previewer for the use of g
 | Ctrl S | Screenshot Device Only |
 | + | Zoom In |
 | - | Zoom Out |
+| Esc | Settings Menu |
 
 Right click on default folder to change colors.
 
 ## Setup
 ### How To Run
 
-Download the entire repository and run Silk Preview.py. It will install the necessary dependencies before launching.
+Download the [latest release](https://github.com/VRArt1/Silk-Preview) and run Silk Preview.py. It will ask if you'd like to install the necessary dependencies before launching if you do not have them installed yet.
 Alternatively install the requirements and run app.py.
 
 ### Dependencies
