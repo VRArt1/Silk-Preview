@@ -4,6 +4,10 @@
 
 **A Theme Previewer for CocoonFE**
 
+[![Platform](https://img.shields.io/badge/platform-windows-green.svg)](https://www.microsoft.com/en-us/windows)
+[![Platform](https://img.shields.io/badge/platform-linux-green.svg)](https://www.linux.org/)
+![Discord](https://img.shields.io/discord/1480567765659029564?label=Discord&logo=discord)
+
 *A work-in-progress vibe coded theme previewer for Cocoon FE.*
 
 The intent of this project is to be an accurate theme previewer for the use of general browsing of themes and for aiding in the development of new themes by allowing for more rapid development at your computer without the need to send files to your device. Simply load in your theme folder just as you would on hardware and it'll display as it would natively. As this software is still a work-in-progress not all features have been replicated but a good chunk of them are already in. If you find any bugs please report them through the issues page. If this project is successful of supporting all aspects of Cocoon themes I hope to expand it to include theme editing and creation features.
