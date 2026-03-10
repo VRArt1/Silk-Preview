@@ -1,0 +1,24 @@
+{
+  "display_name": "RP6",
+  "screen_amount": 1,
+  "screens": {
+    "main": {
+      "x": 44,
+      "y": 26,
+      "w": 790,
+      "h": 444
+    },
+    "external": {
+      "x": 320,
+      "y": 63,
+      "w": 942,
+      "h": 533
+    }
+  },
+  "app_grid": {
+    "y_offset": 10,
+    "width": 250,
+    "height": 30,
+    "icon_scale": 1.0
+  }
+}
