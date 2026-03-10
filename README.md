@@ -75,7 +75,7 @@ Alternatively install the requirements and run app.py.
 
 ## Support
 
-For bug reports and feature requests please use [GitHub Issues](https://github.com/VRArt1/Silk-Preview/issues).  
+For bug reports and feature requests please use [GitHub Issues](https://github.com/VRArt1/Silk-Preview/issues) or [join our Discord](https://discord.gg/6XSzUBCEz8).  
 If you found this software at all useful consider supporting its further development and sending me a tip on [Ko-fi](https://ko-fi.com/vrart1) or [Patreon](https://www.patreon.com/c/VRArt1).
 
 ## Credits
