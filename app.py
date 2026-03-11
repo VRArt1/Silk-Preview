@@ -105,17 +105,26 @@ class App(TkinterDnD.Tk):
         # Total columns for extended grid navigation (use max of all modes)
         self.total_cols = max(self.max_cols_dual, self.max_cols_single_dual, self.max_cols_single_stacked)
 
-        # Load show_empty_slots setting early (needed before renderer init)
-        if "show_empty_slots" not in self.config["Settings"]:
-            self.config["Settings"]["show_empty_slots"] = "True"
-        self.show_empty_slots = self.config.getboolean("Settings", "show_empty_slots", fallback=True)
+        # Load empty_slots setting early (needed before renderer init)
+        if "empty_slots" not in self.config["Settings"]:
+            self.config["Settings"]["empty_slots"] = "True"
+        self.empty_slots = self.config.getboolean("Settings", "empty_slots", fallback=True)
+
+        # Load apps settings
+        if "apps" not in self.config["Settings"]:
+            self.config["Settings"]["apps"] = "True"
+        self.apps_visible = self.config.getboolean("Settings", "apps", fallback=True)
+        
+        if "empty_apps" not in self.config["Settings"]:
+            self.config["Settings"]["empty_apps"] = "True"
+        self.empty_apps_visible = self.config.getboolean("Settings", "empty_apps", fallback=True)
 
         # Load remember_last_theme setting
         self.remember_last_theme = self.config.getboolean("Settings", "remember_last_theme", fallback=True)
         self.last_theme_path = self.config.get("Settings", "last_theme_path", fallback=None)
         
-        # Load top screen icon scale (default 60%)
-        self.top_screen_icon_scale = self.config.getint("Settings", "top_screen_icon_scale", fallback=60)
+        # Load logo_size (default 60%)
+        self.logo_size = self.config.getint("Settings", "logo_size", fallback=60)
         
         # App grid settings are now loaded from device.json in each bezel folder
         # These are just initial defaults that will be overwritten by device settings
@@ -128,7 +137,10 @@ class App(TkinterDnD.Tk):
         # Load default folder color from settings, fallback to "blue"
         self.default_folder_color = self.config.get("Settings", "default_folder_color", fallback="blue")
         self.default_folder_color_var = tk.StringVar(value=self.default_folder_color)
-
+        
+        # Magnify window size
+        self.magnify_size = self.config.getint("Settings", "magnify_size", fallback=200)
+        
         # ----------------------------
         # Renderer
         # ----------------------------
@@ -141,14 +153,18 @@ class App(TkinterDnD.Tk):
         )
         
         # Assign the value so Renderer knows
-        self.renderer.show_empty_slots = self.show_empty_slots
+        self.renderer.show_empty_slots = self.empty_slots
         self.renderer._single_screen_stacked = self.single_screen_stacked_mode
+        self.renderer.app_grid_visible = self.empty_apps_visible
+        self.renderer.populated_apps_visible = self.apps_visible
         self.renderer.app_grid_x_offset = self.app_grid_x_offset
         self.renderer.app_grid_y_offset = self.app_grid_y_offset
         self.renderer.app_grid_width = self.app_grid_width
         self.renderer.app_grid_icon_size = self.app_grid_icon_size
         self.renderer.app_grid_icon_scale = self.app_grid_icon_scale
         self.renderer.default_folder_color = self.default_folder_color
+        self.renderer.magnify_size = self.magnify_size
+        self.renderer.top_screen_icon_scale = self.logo_size / 100.0
         
         # Set initial top screen offset based on stacked mode setting
         from screen import Screen
@@ -212,12 +228,43 @@ class App(TkinterDnD.Tk):
         # ----------------------------
         # Frame/Bezel selector - auto-discover available bezels
         # ----------------------------
-        self.bezel_options = list(self.renderer.BEZEL_OPTIONS.keys())
-        self.bezel_var = StringVar(value=self.bezel_options[0] if self.bezel_options else "Rainbow")
-        saved_frame = self.config.get("Settings", "frame", fallback=self.bezel_var.get())
-        if saved_frame in self.bezel_options:
-            self.bezel_var.set(saved_frame)
-            self.renderer.set_bezel(saved_frame)
+        self.bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
+        
+        # Get saved bezel from config
+        saved_bezel = self.config.get("Settings", "bezel", fallback="")
+        
+        # Determine default bezel:
+        # 1. If saved_bezel is valid, use it
+        # 2. Else if "AYN Thor - Rainbow" exists, use it (default for new users)
+        # 3. Else use first in sorted list
+        if saved_bezel and saved_bezel in self.bezel_options:
+            default_bezel = saved_bezel
+        elif "AYN Thor - Rainbow" in self.bezel_options:
+            default_bezel = "AYN Thor - Rainbow"
+        elif self.bezel_options:
+            default_bezel = self.bezel_options[0]
+        else:
+            default_bezel = "AYN Thor - Rainbow"  # Fallback hardcoded default
+        
+        self.bezel_var = StringVar(value=default_bezel)
+        
+        # Load the default bezel
+        self.renderer.set_bezel(default_bezel)
+        
+        # Sync app grid variables from renderer (in case bezel changed them)
+        self.app_grid_x_offset = self.renderer.app_grid_x_offset
+        self.app_grid_y_offset = self.renderer.app_grid_y_offset
+        self.app_grid_width = self.renderer.app_grid_width
+        self.app_grid_icon_size = self.renderer.app_grid_icon_size
+        self.app_grid_icon_scale = self.renderer.app_grid_icon_scale
+        
+        # Update zoom levels based on the screen mode that was loaded
+        self._update_zoom_levels_for_mode()
+        
+        # Apply the grid size based on current zoom level
+        rows, cols = self.zoom_levels[self.zoom_index]
+        if hasattr(self.renderer, "set_grid_size"):
+            self.renderer.set_grid_size(rows, cols)
         
         # Calculate dropdown width based on longest option
         max_width = max((len(opt) for opt in self.bezel_options), default=20)
@@ -254,11 +301,11 @@ class App(TkinterDnD.Tk):
         # ----------------------------
         self.corner_hints_var = tk.BooleanVar(value=self.renderer.corner_hints_visible)
         self.dock_var = tk.BooleanVar(value=self.renderer.dock_visible)
-        self.app_grid_visible = getattr(self.renderer, 'app_grid_visible', True)
-        self.populated_apps_visible = getattr(self.renderer, 'populated_apps_visible', True)
+        self.app_grid_visible = self.empty_apps_visible
+        self.populated_apps_visible = self.apps_visible
         self.single_stacked_var = tk.BooleanVar(value=self.single_screen_stacked_mode)
-        self._icon_scale_var = tk.IntVar(value=self.top_screen_icon_scale)
-        self.show_empty_slots_var = tk.BooleanVar(value=self.show_empty_slots)
+        self._icon_scale_var = tk.IntVar(value=self.logo_size)
+        self.empty_slots_var = tk.BooleanVar(value=self.empty_slots)
         self.remember_var = tk.BooleanVar(value=self.remember_last_theme)
         self.bezel_edit_var = tk.BooleanVar(value=False)
         
@@ -270,7 +317,17 @@ class App(TkinterDnD.Tk):
             text="Settings",
             command=self.open_settings
         )
-        self.settings_button.pack(side="right", padx=(12, 4))
+        self.settings_button.pack(side="right", padx=4)
+        
+        # ----------------------------
+        # Bezel Edit Mode button (left of Settings)
+        # ----------------------------
+        self.bezel_edit_btn = ttk.Button(
+            self.controls,
+            text="Bezel Edit Mode",
+            command=self.toggle_bezel_edit_mode
+        )
+        self.bezel_edit_btn.pack(side="right", padx=4)
         
         # ----------------------------
         # Canvas and keyboard binds
@@ -376,14 +433,14 @@ class App(TkinterDnD.Tk):
     
     def toggle_empty_slots(self):
         # Update both App and Renderer
-        self.show_empty_slots = self.show_empty_slots_var.get()
-        self.renderer.show_empty_slots = self.show_empty_slots
+        self.empty_slots = self.empty_slots_var.get()
+        self.renderer.show_empty_slots = self.empty_slots
         self.renderer._grid_items_dirty = True
         
         # Save to settings.ini immediately
         if "Settings" not in self.config:
             self.config["Settings"] = {}
-        self.config["Settings"]["show_empty_slots"] = str(self.show_empty_slots)
+        self.config["Settings"]["empty_slots"] = str(self.empty_slots)
         with open(self.settings_path, "w") as f:
             self.config.write(f)
 
@@ -509,6 +566,13 @@ class App(TkinterDnD.Tk):
         
         # Save the bezel selection to settings
         self.save_settings()
+        
+        # Sync app grid variables from renderer (in case bezel changed them)
+        self.app_grid_x_offset = self.renderer.app_grid_x_offset
+        self.app_grid_y_offset = self.renderer.app_grid_y_offset
+        self.app_grid_width = self.renderer.app_grid_width
+        self.app_grid_icon_size = self.renderer.app_grid_icon_size
+        self.app_grid_icon_scale = self.renderer.app_grid_icon_scale
         
         # Update zoom levels and smart-preserve zoom level
         old_rows = self.renderer.GRID_ROWS
@@ -702,10 +766,26 @@ class App(TkinterDnD.Tk):
     
     def toggle_app_grid(self):
         self.renderer.app_grid_visible = self.app_grid_visible
+        self.empty_apps_visible = self.app_grid_visible
+        
+        if "Settings" not in self.config:
+            self.config["Settings"] = {}
+        self.config["Settings"]["empty_apps"] = str(self.empty_apps_visible)
+        with open(self.settings_path, "w") as f:
+            self.config.write(f)
+        
         self.redraw()
     
     def toggle_populated_apps(self):
         self.renderer.populated_apps_visible = self.populated_apps_visible
+        self.apps_visible = self.populated_apps_visible
+        
+        if "Settings" not in self.config:
+            self.config["Settings"] = {}
+        self.config["Settings"]["apps"] = str(self.apps_visible)
+        with open(self.settings_path, "w") as f:
+            self.config.write(f)
+        
         self.redraw()
     
     # -------------------------------------------------
@@ -1461,9 +1541,10 @@ class App(TkinterDnD.Tk):
         self.renderer.screen_manager._update_single_screen_main_position()
 
     def _on_icon_scale_change(self, value):
-        """Update top screen icon scale from slider."""
+        """Update logo size from slider."""
         scale = int(value)
-        self.top_screen_icon_scale = scale
+        self.logo_size = scale
+        self._icon_scale_var.set(scale)
         self.renderer.top_screen_icon_scale = scale / 100.0
         self.save_settings()
         self.redraw()
@@ -1476,17 +1557,20 @@ class App(TkinterDnD.Tk):
         if "Settings" not in self.config:
             self.config["Settings"] = {}
 
-        self.config["Settings"]["frame"] = self.bezel_var.get()
+        self.config["Settings"]["bezel"] = self.bezel_var.get()
         self.config["Settings"]["zoom_index"] = str(self.zoom_index)
-        self.config["Settings"]["corner_hints_visible"] = str(self.renderer.corner_hints_visible)
-        self.config["Settings"]["dock_visible"] = str(self.renderer.dock_visible)
+        self.config["Settings"]["show_corner_hints"] = str(self.renderer.corner_hints_visible)
+        self.config["Settings"]["dock_background"] = str(self.renderer.dock_visible)
         self.config["Settings"]["remember_last_theme"] = str(self.remember_last_theme)
         if self.last_theme_path:
             self.config["Settings"]["last_theme_path"] = self.last_theme_path
         self.config["Settings"]["default_folder_color"] = self.default_folder_color_var.get()
-        self.config["Settings"]["show_empty_slots"] = str(getattr(self, "show_empty_slots", True))
-        self.config["Settings"]["top_screen_icon_scale"] = str(getattr(self, "top_screen_icon_scale", 60))
-        self.config["Settings"]["single_screen_mode"] = str(getattr(self, "single_screen_stacked_mode", False))        
+        self.config["Settings"]["empty_slots"] = str(getattr(self, "empty_slots", True))
+        self.config["Settings"]["logo_size"] = str(getattr(self, "logo_size", 60))
+        self.config["Settings"]["single_screen_mode"] = str(getattr(self, "single_screen_stacked_mode", False))
+        self.config["Settings"]["apps"] = str(getattr(self, "apps_visible", True))
+        self.config["Settings"]["empty_apps"] = str(getattr(self, "empty_apps_visible", True))
+        self.config["Settings"]["magnify_size"] = str(getattr(self, "magnify_size", 200))
 
         with open(self.settings_path, "w") as f:
             self.config.write(f)

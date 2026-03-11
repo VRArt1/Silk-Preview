@@ -3,8 +3,13 @@ import json
 import random
 import math
 import av
-from PIL import Image, ImageSequence
+from typing import Tuple
+from PIL import Image, ImageSequence, ImageDraw, ImageOps, ImageChops
 import time
+
+from screen import ScreenManager, MainScreen, ExternalScreen, Screen
+
+
 
 BASE_DIR = Path(__file__).parent
 ASSETS_DIR = BASE_DIR / "assets"
@@ -16,20 +21,9 @@ class Renderer:
     FRAME_WIDTH = 800
     FRAME_HEIGHT = 950
     DEVICE_PADDING = 20
-
-    # Top Screen / Wallpaper
-    TOP_SCREEN_X = 41
-    TOP_SCREEN_Y = 24
-    TOP_SCREEN_W = 718
-    TOP_SCREEN_H = 405
-
-    # Bottom Screen / Wallpaper
-    BOTTOM_SCREEN_X = 205
-    BOTTOM_SCREEN_Y = 540
-    BOTTOM_SCREEN_W = 392
-    BOTTOM_SCREEN_H = 340
-    BOTTOM_SCREEN_HT_OFFSET = 15 # subtracted from top height of grid area
-    BOTTOM_SCREEN_HB_OFFSET = 40  # subtracted from bottom height for grid area
+    
+    # Devices configuration
+    DEVICES = {}
 
     # Grid
     GRID_OUTER_PADDING = 6
@@ -57,19 +51,479 @@ class Renderer:
     # Background scaling
     BG_SCALE = 0.25
 
-    # Frame options
-    FRAME_OPTIONS = {
-        "Black": "device_frame_black.png",
-        "Clear Purple": "device_frame_purple.png",
-        "Rainbow": "device_frame_rainbow.png",
-        "White": "device_frame_white.png",
-        "Custom": "device_frame_custom.png",
-    }
-
-    def __init__(self, max_grid_slots):
+    # Bezel options - populated dynamically from assets/bezels folder
+    BEZEL_OPTIONS = {}
     
+    # Track bezel file info: name -> (filename, screen_mode)
+    BEZEL_INFO = {}
+    BEZEL_SCREEN_MODE = {}  # name -> "dual" or "single"
+    
+    @classmethod
+    def discover_bezels(cls):
+        """Scan all folders in assets/bezels for available bezel images."""
+        cls.BEZEL_OPTIONS.clear()
+        cls.BEZEL_INFO.clear()
+        cls.BEZEL_SCREEN_MODE.clear()
+        cls.DEVICES.clear()
+        
+        bezel_dir = ASSETS_DIR / "bezels"
+        
+        if not bezel_dir.exists():
+            return cls.BEZEL_OPTIONS
+        
+        # Scan all subdirectories in bezels folder
+        for folder in sorted(bezel_dir.iterdir()):
+            if not folder.is_dir():
+                continue
+            
+            folder_name = folder.name
+            
+            # Load device.json from this folder if it exists
+            device_file = folder / "device.json"
+            device_config = None
+            if device_file.exists():
+                try:
+                    with open(device_file, 'r') as f:
+                        device_config = json.load(f)
+                        cls.DEVICES[folder_name] = device_config
+                except Exception as e:
+                    print(f"Failed to load device.json for {folder_name}: {e}")
+            
+            # Get display name from device config or fall back to folder name
+            if device_config and "display_name" in device_config:
+                device_display_name = device_config["display_name"]
+            else:
+                device_display_name = folder_name.title()
+            
+            # Scan for PNG files in this folder (only images, not json)
+            for f in sorted(folder.glob("*.png")):
+                # Create display name: "Device Display Name - Image Name"
+                image_name = f.stem.replace("_", " ").title()
+                display_name = f"{device_display_name} - {image_name}"
+                
+                # Store bezel info
+                relative_path = str(f.relative_to(ASSETS_DIR))
+                cls.BEZEL_OPTIONS[display_name] = relative_path
+                cls.BEZEL_INFO[display_name] = (relative_path, folder_name)
+                
+                # Determine screen mode from loaded device config
+                if folder_name in cls.DEVICES:
+                    screen_amount = cls.DEVICES[folder_name].get("screen_amount", 2)
+                    mode = "single" if screen_amount == 1 else "dual"
+                else:
+                    mode = "dual"  # Default to dual screen
+                
+                cls.BEZEL_SCREEN_MODE[display_name] = mode
+        
+        return cls.BEZEL_OPTIONS
+    
+    def apply_device_settings(self, device_name: str):
+        """Apply device settings from device.json in the bezel folder"""
+        # Get frame dimensions from loaded bezel image FIRST (needed for centering)
+        if self.bezel_img:
+            Screen.FRAME_WIDTH = self.bezel_img.width
+            Screen.FRAME_HEIGHT = self.bezel_img.height
+            self.FRAME_WIDTH = Screen.FRAME_WIDTH
+            self.FRAME_HEIGHT = Screen.FRAME_HEIGHT
+        
+        # Load device.json from the bezel folder (to pick up external edits)
+        device_file = ASSETS_DIR / "bezels" / device_name / "device.json"
+        
+        if device_file.exists():
+            try:
+                with open(device_file, 'r') as f:
+                    device = json.load(f)
+                    # Update in-memory DEVICES dict
+                    self.DEVICES[device_name] = device
+            except Exception as e:
+                print(f"Failed to load device.json for {device_name}: {e}")
+                device = None
+        else:
+            device = None
+        
+        if not device:
+            print(f"No device config found for '{device_name}', using defaults")
+            # Center screens on device canvas as fallback
+            self._center_screens_on_device()
+            return
+        
+        # Update screen mode based on screen_amount
+        screen_amount = device.get("screen_amount", 2)
+        mode = "single" if screen_amount == 1 else "dual"
+        self.BEZEL_SCREEN_MODE[self.current_bezel_name] = mode
+        
+        # Update screen positions
+        if "screens" in device:
+            screens = device["screens"]
+            if "main" in screens:
+                main = screens["main"]
+                Screen.TOP_SCREEN = (main["x"], main["y"], main["w"], main["h"])
+            if "external" in screens:
+                ext = screens["external"]
+                Screen.BOTTOM_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+                Screen.SINGLE_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+        
+        # Update app grid settings (dock at bottom)
+        if "app_grid" in device:
+            grid = device["app_grid"]
+            self.app_grid_x_offset = grid.get("x_offset", 0)
+            self.app_grid_y_offset = grid.get("y_offset", -40)
+            self.app_grid_width = grid.get("width", 400)
+            self.app_grid_icon_size = grid.get("height", 50)
+            self.app_grid_icon_scale = grid.get("icon_scale", 1.0)
+        
+        # Update screen manager with new dimensions
+        self.screen_manager._frame_width = Screen.FRAME_WIDTH
+        self.screen_manager._frame_height = Screen.FRAME_HEIGHT
+    
+    def _center_screens_on_device(self):
+        """Center screens on device canvas when no device config exists"""
+        # For dual screen devices, center both screens
+        # For single screen devices, center the external screen
+        frame_w = self.FRAME_WIDTH
+        frame_h = self.FRAME_HEIGHT
+        
+        # Default to centered single screen
+        screen_w = frame_w // 2
+        screen_h = frame_h // 2
+        Screen.SINGLE_SCREEN = (
+            (frame_w - screen_w) // 2,
+            (frame_h - screen_h) // 2,
+            screen_w,
+            screen_h
+        )
+        Screen.BOTTOM_SCREEN = Screen.SINGLE_SCREEN
+        
+        # Default to centered main screen
+        Screen.TOP_SCREEN = (
+            (frame_w - screen_w) // 2,
+            (frame_h - screen_h * 2 - 50) // 2,
+            screen_w,
+            screen_h
+        )
+    
+    def save_device_app_grid_settings(self):
+        """Save current app_grid settings to devices.json for the current device"""
+        # Get current device name from bezel path
+        filename = self.BEZEL_INFO.get(self.current_bezel_name, "")[0]
+        if not filename:
+            return
+        
+        # Extract folder name (e.g., "bezels/ayn thor/..." -> "ayn thor")
+        parts = filename.split("/")
+        if len(parts) < 2:
+            return
+        device_name = parts[1]
+        
+        # Load current devices.json
+        devices_file = BASE_DIR / "devices.json"
+        if not devices_file.exists():
+            return
+        
+        try:
+            with open(devices_file, 'r') as f:
+                devices = json.load(f)
+            
+            # Update the app_grid settings for this device
+            if device_name in devices:
+                if "app_grid" not in devices[device_name]:
+                    devices[device_name]["app_grid"] = {}
+                
+                devices[device_name]["app_grid"]["x_offset"] = self.app_grid_x_offset
+                devices[device_name]["app_grid"]["y_offset"] = self.app_grid_y_offset
+                devices[device_name]["app_grid"]["width"] = self.app_grid_width
+                devices[device_name]["app_grid"]["icon_size"] = self.app_grid_icon_size
+                
+                # Write back to file
+                with open(devices_file, 'w') as f:
+                    json.dump(devices, f, indent=2)
+        except Exception as e:
+            print(f"Failed to save device settings: {e}")
+    
+    def enter_bezel_edit_mode(self):
+        """Enter bezel editing mode, saving current state for potential revert"""
+        self.bezel_edit_mode = True
+        
+        # Reload device.json to ensure we have the latest values
+        if self.current_bezel_name:
+            # Get folder name from BEZEL_INFO using display name
+            bezel_info = self.BEZEL_INFO.get(self.current_bezel_name, ("", ""))
+            folder_name = bezel_info[1] if len(bezel_info) > 1 else ""
+            if folder_name:
+                self.apply_device_settings(folder_name)
+            else:
+                # Fallback: try to extract folder name from bezel path
+                filename = self.BEZEL_INFO.get(self.current_bezel_name, ("", ""))[0]
+                if filename:
+                    parts = filename.split("/")
+                    if len(parts) >= 2:
+                        folder_name = parts[1]
+                        self.apply_device_settings(folder_name)
+        
+        # Save current state for revert
+        self._saved_screen_amount = self._get_current_screen_amount()
+        self._saved_screens = self._get_current_screens()
+        self._saved_app_grid = {
+            "x_offset": self.app_grid_x_offset,
+            "y_offset": self.app_grid_y_offset,
+            "width": self.app_grid_width,
+            "icon_size": self.app_grid_icon_size,
+            "icon_scale": self.app_grid_icon_scale
+        }
+        
+        # Initialize temp state with current values (deep copy to prevent aliasing)
+        self._temp_screen_amount = self._saved_screen_amount
+        self._temp_screens = {
+            "main": dict(self._saved_screens.get("main", {})),
+            "external": dict(self._saved_screens.get("external", {}))
+        }
+        self._temp_app_grid = dict(self._saved_app_grid)
+        
+        # Store original frame_hidden state and make bezel semi-transparent
+        self._original_frame_hidden = self.frame_hidden
+        self._bezel_transparent_mode = True
+        self._invalidate_static_cache()
+    
+    def exit_bezel_edit_mode(self):
+        """Exit bezel editing mode without applying changes"""
+        self.bezel_edit_mode = False
+        self._temp_screen_amount = None
+        self._temp_screens = {}
+        self._temp_app_grid = {}
+        
+        # Restore original frame visibility
+        if hasattr(self, '_original_frame_hidden'):
+            self.frame_hidden = self._original_frame_hidden
+        self._bezel_transparent_mode = False
+        self._invalidate_static_cache()
+    
+    def has_unsaved_changes(self) -> bool:
+        """Check if there are unsaved changes in bezel edit mode"""
+        if not self.bezel_edit_mode:
+            return False
+        
+        # Check screen amount
+        if self._temp_screen_amount != self._saved_screen_amount:
+            return True
+        
+        # Check screen positions
+        for screen_name in ["main", "external"]:
+            temp_screen = self._temp_screens.get(screen_name, {})
+            saved_screen = self._saved_screens.get(screen_name, {})
+            for key in ["x", "y", "w", "h"]:
+                if temp_screen.get(key) != saved_screen.get(key):
+                    return True
+        
+        # Check app grid settings
+        temp_grid = self._temp_app_grid or {}
+        saved_grid = self._saved_app_grid or {}
+        for key in ["x_offset", "y_offset", "width", "icon_size"]:
+            if temp_grid.get(key) != saved_grid.get(key):
+                return True
+        
+        return False
+    
+    def apply_bezel_changes(self):
+        """Apply temporary changes to actual settings and save to JSON"""
+        if not self.bezel_edit_mode:
+            return
+        
+        # Apply screen amount
+        if self._temp_screen_amount is not None:
+            self._apply_screen_amount(self._temp_screen_amount)
+        
+        # Apply screen positions
+        self._apply_screen_positions(self._temp_screens)
+        
+        # Apply app grid settings
+        if self._temp_app_grid:
+            self.app_grid_x_offset = self._temp_app_grid.get("x_offset", 0)
+            self.app_grid_y_offset = self._temp_app_grid.get("y_offset", -40)
+            self.app_grid_width = self._temp_app_grid.get("width", 400)
+            self.app_grid_icon_size = self._temp_app_grid.get("icon_size", 50)
+            self.app_grid_icon_scale = self._temp_app_grid.get("icon_scale", 1.0)
+        
+        # Save to JSON
+        self._save_all_device_settings()
+        
+        # Exit edit mode
+        self.exit_bezel_edit_mode()
+    
+    def revert_bezel_changes(self):
+        """Revert to saved/JSON state"""
+        if not self.bezel_edit_mode:
+            return
+        
+        # Revert to saved state (from JSON or when entering edit mode)
+        if self._saved_screen_amount is not None:
+            self._apply_screen_amount(self._saved_screen_amount)
+        
+        self._apply_screen_positions(self._saved_screens)
+        
+        if self._saved_app_grid:
+            self.app_grid_x_offset = self._saved_app_grid.get("x_offset", 0)
+            self.app_grid_y_offset = self._saved_app_grid.get("y_offset", -40)
+            self.app_grid_width = self._saved_app_grid.get("width", 400)
+            self.app_grid_icon_size = self._saved_app_grid.get("icon_size", 50)
+            self.app_grid_icon_scale = self._saved_app_grid.get("icon_scale", 1.0)
+        
+        # Exit edit mode
+        self.exit_bezel_edit_mode()
+    
+    def _get_current_screen_amount(self) -> int:
+        """Get current screen amount (1 or 2)"""
+        mode = self.BEZEL_SCREEN_MODE.get(self.current_bezel_name, "dual")
+        return 1 if mode == "single" else 2
+    
+    def _get_current_screens(self) -> dict:
+        """Get current screen positions"""
+        return {
+            "main": {
+                "x": Screen.TOP_SCREEN[0],
+                "y": Screen.TOP_SCREEN[1],
+                "w": Screen.TOP_SCREEN[2],
+                "h": Screen.TOP_SCREEN[3]
+            },
+            "external": {
+                "x": Screen.BOTTOM_SCREEN[0],
+                "y": Screen.BOTTOM_SCREEN[1],
+                "w": Screen.BOTTOM_SCREEN[2],
+                "h": Screen.BOTTOM_SCREEN[3]
+            }
+        }
+    
+    def _apply_screen_amount(self, amount: int):
+        """Apply screen amount change"""
+        if amount == 1:
+            self.BEZEL_SCREEN_MODE[self.current_bezel_name] = "single"
+            self.screen_manager.set_single_screen_mode()
+        else:
+            self.BEZEL_SCREEN_MODE[self.current_bezel_name] = "dual"
+            self.screen_manager.set_dual_screen_mode()
+    
+    def _apply_screen_positions(self, screens: dict):
+        """Apply screen position changes"""
+        if "main" in screens:
+            main = screens["main"]
+            Screen.TOP_SCREEN = (main["x"], main["y"], main["w"], main["h"])
+            self.screen_manager.main.rect = Screen.TOP_SCREEN
+        
+        if "external" in screens:
+            ext = screens["external"]
+            Screen.BOTTOM_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+            Screen.SINGLE_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+            self.screen_manager.external.rect = Screen.BOTTOM_SCREEN
+    
+    def _save_all_device_settings(self):
+        """Save all device settings (screens + app_grid) to device.json in the bezel folder"""
+        filename = self.BEZEL_INFO.get(self.current_bezel_name, "")
+        if not filename:
+            print(f"Warning: No BEZEL_INFO for '{self.current_bezel_name}'")
+            return
+        
+        # filename is a tuple of (relative_path, folder_name)
+        # Use folder_name directly as the device name
+        device_name = filename[1] if len(filename) > 1 else None
+        if not device_name:
+            print(f"Warning: No device name found in BEZEL_INFO for '{self.current_bezel_name}'")
+            return
+        
+        # Save to device.json in the bezel folder
+        device_file = ASSETS_DIR / "bezels" / device_name / "device.json"
+        
+        try:
+            # Load existing device.json or create new one
+            if device_file.exists():
+                with open(device_file, 'r') as f:
+                    existing_config = json.load(f)
+            else:
+                existing_config = {}
+            
+            # Build new config with display_name at the top
+            # Default to folder name with proper capitalization if display_name is missing
+            display_name = existing_config.get("display_name", device_name.title())
+            
+            device_config = {
+                "display_name": display_name,
+                "screen_amount": self._get_current_screen_amount(),
+                "screens": self._get_current_screens(),
+                "app_grid": {
+                    "y_offset": self.app_grid_y_offset,
+                    "width": self.app_grid_width,
+                    "height": self.app_grid_icon_size,
+                    "icon_scale": self.app_grid_icon_scale
+                }
+            }
+            
+            with open(device_file, 'w') as f:
+                json.dump(device_config, f, indent=2)
+            print(f"Saved device settings for '{device_name}' to {device_file}")
+            
+            # Also update the in-memory DEVICES dict
+            self.DEVICES[device_name] = device_config
+            
+        except Exception as e:
+            print(f"Failed to save device settings: {e}")
+    
+    def set_temp_screen_amount(self, amount: int):
+        """Set temporary screen amount during editing"""
+        self._temp_screen_amount = amount
+        self._apply_screen_amount(amount)
+        self._invalidate_static_cache()
+    
+    def set_temp_screen_pos(self, screen_name: str, x: int, y: int, w: int, h: int):
+        """Set temporary screen position during editing"""
+        self._temp_screens[screen_name] = {"x": x, "y": y, "w": w, "h": h}
+        self._apply_screen_positions(self._temp_screens)
+        self._invalidate_static_cache()
+    
+    def set_temp_app_grid(self, key: str, value):
+        """Set temporary app grid setting during editing"""
+        self._temp_app_grid[key] = value
+        if key == "x_offset":
+            self.app_grid_x_offset = value
+        elif key == "y_offset":
+            self.app_grid_y_offset = value
+        elif key == "width":
+            self.app_grid_width = value
+        elif key == "icon_size":
+            self.app_grid_icon_size = value
+        elif key == "icon_scale":
+            self.app_grid_icon_scale = value
+        self._invalidate_static_cache()
+
+    def __init__(self, max_grid_slots: int, max_rows_dual: int, max_rows_single_dual: int, max_rows_single_stacked: int, total_cols: int):
+        
         # Default folder color (matches available variants in assets/default folder)
         self.default_folder_color = "blue"  # or "red", "green", etc.
+        
+        # Top screen icon scale (0.0 to 1.0, default 0.6 = 60%)
+        self.top_screen_icon_scale = 0.6
+        
+        # Bezel edit mode
+        self.bezel_edit_mode = False  # Off by default
+        self._temp_screen_amount = None  # Temporary screen amount during editing
+        self._temp_screens = {}  # Temporary screen positions during editing
+        self._temp_app_grid = {}  # Temporary app grid settings during editing
+        self._saved_screen_amount = None  # Saved state for revert
+        self._saved_screens = {}
+        self._saved_app_grid = {}
+        
+        # App grid settings (region for 5 evenly spaced app icons)
+        self.app_grid_x_offset = 0  # Horizontal offset from center
+        self.app_grid_y_offset = 0  # Vertical offset from bottom
+        self.app_grid_width = 400  # Total width of the app grid region
+        self.app_grid_icon_size = 50  # Size of each circular icon
+        self.app_grid_icon_scale = 1.0  # Scale factor for icons (1.0 = 100%)
+        self._app_images = []  # List of randomly selected app images
+        self._app_images_loaded = False
+        self._app_grid_debug = None  # Debug info for app grid positioning
+        
+        # Mouse position for magnify window
+        self.mouse_x = 0
+        self.mouse_y = 0
+        self.magnify_size = 200  # Size of magnify window
+        self.magnify_zoom = 2.667  # Zoom level (2.0 * 200/150)
         
         self._last_canvas_size = None
         
@@ -78,11 +532,26 @@ class Renderer:
         self._sel_anim_to = None
         self._sel_anim_duration = 0.35  # seconds (tweakable)
         
+        # Zoom animation state
+        self._zoom_anim_start = None
+        self._zoom_anim_from = None  # (rows, cols)
+        self._zoom_anim_to = None    # (rows, cols)
+        self._zoom_anim_duration = 0.25  # seconds (faster for responsiveness)
+        self._current_grid_rows = 3  # default
+        self._current_grid_cols = 4  # default
+        self._zoom_from_cell_w = 0  # Cached cell width at zoom start
+        self._zoom_from_cell_h = 0  # Cached cell height at zoom start
+        self._zoom_to_cell_w = 0    # Target cell width
+        self._zoom_to_cell_h = 0    # Target cell height
+        self._zoom_item_positions = {}  # Cached positions at zoom start for visible items
+        self._zoom_ended_needs_snap = False  # Flag to continue lerp after zoom ends
+        
         # Timestamps for real-time animation
         self._last_wallpaper_top_update = time.perf_counter()
         self._last_wallpaper_bottom_update = time.perf_counter()
         self._last_hero_update = {} # keyed by selected_index
         self._last_logo_update = {}
+        self._last_game_update = {}
     
         # Caches
         self._resize_cache = {}
@@ -96,13 +565,60 @@ class Renderer:
         self.video_frame_cache = {}
         
         self.animations = {}
+        
+        # Discover available bezels (also loads device.json from each bezel folder)
+        Renderer.discover_bezels()
 
         # Device images
-        self.current_frame_name = "Rainbow"  # default frame
-        self.frame_img = self._load_frame(self.current_frame_name)
+        self.current_bezel_name = "Rainbow"  # default frame
+        self.bezel_img = self._load_frame(self.current_bezel_name)
+        self.frame_hidden = False  # Debug flag to hide frame image
+        self.draw_debug_borders = False  # Debug flag to draw screen borders
+        self.debug_drag_mode = False  # Debug flag for drag mode
         self._invalidate_static_cache()
-        self.ui_img = self._load_cached_rgba(ASSETS_DIR / "device_ui.png", PLACEHOLDER_DIR / "device_ui.png")
-        self.ui_visible = True
+        
+        # Set frame scale
+        frame_w, frame_h = self.bezel_img.size
+        self._frame_scale = min(frame_w / self.FRAME_WIDTH, frame_h / self.FRAME_HEIGHT)
+        
+        # Screen manager
+        self.screen_manager = ScreenManager()
+        self._detect_screen_positions()
+        
+        # Load UI elements
+        self.ui_d_bottom_dock = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_d_bottom_dock.png")
+        self.ui_d_bottom_left_cornerhints = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_d_bottom_left_cornerhints.png")
+        self.ui_d_bottom_right_cornerhints = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_d_bottom_right_cornerhints.png")
+        self.ui_d_top_cornerhints = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_d_top_cornerhints.png")
+        self.ui_d_top_time = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_d_top_time.png")
+        self.ui_d_top_user = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_d_top_user.png")
+        self.ui_s_ds_left_cornerhints = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_s_ds_left_cornerhints.png")
+        self.ui_s_ds_right_cornerhints = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_s_dss_right_cornerhints.png")
+        self.ui_s_dock = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_s_dock.png")
+        self.ui_s_ss_left_cornerhints = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_s_ss_left_cornerhints.png")
+        self.ui_s_ss_right_cornerhints = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_s_dss_right_cornerhints.png")
+        self.ui_s_ss_time = self._load_cached_rgba(ASSETS_DIR / "ui_placeholder/ui_s_ss_time.png")
+        
+        # UI element anchors (screen_type, horizontal_anchor, vertical_anchor)
+        # screen_type: "main" = top/primary screen, "ext" = bottom/external screen
+        self.ui_d_bottom_dock_anchor = ("ext", "center", "bottom")
+        self.ui_d_bottom_left_cornerhints_anchor = ("ext", "left", "bottom")
+        self.ui_d_bottom_right_cornerhints_anchor = ("ext", "right", "bottom")
+        self.ui_d_top_cornerhints_anchor = ("main", "left", "bottom")
+        self.ui_d_top_time_anchor = ("main", "right", "top")
+        self.ui_d_top_user_anchor = ("main", "left", "top")
+        self.ui_s_ds_left_cornerhints_anchor = ("ext", "left", "bottom")
+        self.ui_s_ds_right_cornerhints_anchor = ("ext", "right", "bottom")
+        self.ui_s_dock_anchor = ("ext", "center", "bottom")
+        self.ui_s_ss_left_cornerhints_anchor = ("ext", "left", "bottom")
+        self.ui_s_ss_right_cornerhints_anchor = ("ext", "right", "bottom")
+        self.ui_s_ss_time_anchor = ("ext", "right", "top")
+        
+        # Visibility toggles
+        self.corner_hints_visible = True
+        self.dock_visible = True
+        self.app_grid_visible = True
+        self.populated_apps_visible = True
         
         # Background
         self.bg_img = self._load_cached_rgba(ASSETS_DIR / "bg.png", PLACEHOLDER_DIR / "bg.png")
@@ -112,6 +628,9 @@ class Renderer:
 
         # Selection highlight
         self.selected_img = self._load_cached_rgba(ASSETS_DIR / "selected.png", PLACEHOLDER_DIR / "selected.png")
+
+        # Single screen stacked mode mask
+        self.ss_mask = self._load_cached_rgba(ASSETS_DIR / "ss_mask.png")
 
         # Theme state
         self.theme_path = None
@@ -142,6 +661,31 @@ class Renderer:
         self.selected_index = 0  # Target selection index
         self.grid_items = []      # List of dicts for each cell
         self.grid_positions = []  # List of (x, y, w, h) for each cell
+        self._grid_items_dirty = True  # Flag to rebuild grid items
+        
+        # Extended grid - virtual columns beyond visible area
+        self.TOTAL_COLS = total_cols  # Total columns available (can extend beyond visible GRID_COLS)
+        self.grid_scroll_x = 0  # Horizontal scroll offset (current animated value)
+        self._grid_scroll_target = 0  # Target scroll position
+        self._grid_scroll_from = 0  # Starting scroll position for animation
+        self._grid_scroll_start = None  # Animation start time
+        self._grid_scroll_duration = 0.2  # Scroll animation duration (seconds)
+        
+        # Maximum grid sizes (passed from app.py based on zoom_levels)
+        self.MAX_GRID_ROWS_DUAL = max_rows_dual
+        self.MAX_GRID_ROWS_SINGLE_DUAL = max_rows_single_dual
+        self.MAX_GRID_ROWS_SINGLE_STACKED = max_rows_single_stacked
+        self.MAX_TOTAL_SLOTS = max_grid_slots
+        
+        # Single screen stacked mode state
+        self._single_screen_stacked = False
+        self.MAX_TOTAL_SLOTS = max_grid_slots
+        
+        self._full_cell_width = 0  # Full cell width before shrinking to square
+        self._last_grid_w = 400  # Last known grid width (for zoom calculations)
+        self._last_grid_h = 300  # Last known grid height
+        self._last_grid_x = 0  # Last known grid x position
+        self._last_grid_y = 0  # Last known grid y position
 
         # Animation state for selection highlight
         self._selected_anim_x = None
@@ -155,6 +699,7 @@ class Renderer:
         self._grid_shift_to = 0.0
         self._grid_shift_current = 0.0
         self._grid_shift_start = None
+        
         self.GRID_SHIFT_DURATION = .4   # default speed (seconds)
         
      
@@ -163,13 +708,14 @@ class Renderer:
         self.GRID_COLS = self.DEFAULT_GRID_COLS
         
         self.max_grid_slots = max_grid_slots
+        self.show_empty_slots = True  # Can be overridden from app.py
         
         # Discover ALL game image paths (no image loading yet)
         self._game_path_lookup = {}      # name → list of Paths (variants)
         self._game_image_cache = {}      # path → loaded PIL image
         self._used_game_images = set()   # track used images per theme
 
-        game_files = [f for f in GAMES_DIR.iterdir() if f.is_file()]
+        game_files = [f for f in GAMES_DIR.iterdir() if f.is_file() and f.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.gif')]
         for f in game_files:
             stem = f.stem.lower()
             # Determine base name before underscore or suffix (e.g., gba_blue → gba)
@@ -184,6 +730,15 @@ class Renderer:
     # -----------------------------
     # Helpers
     # -----------------------------
+    
+    def get_max_grid_rows(self):
+        """Get the maximum grid rows based on current screen mode."""
+        if self.screen_manager.screen_mode == "single":
+            if self._single_screen_stacked:
+                return self.MAX_GRID_ROWS_SINGLE_STACKED
+            else:
+                return self.MAX_GRID_ROWS_SINGLE_DUAL
+        return self.MAX_GRID_ROWS_DUAL
     
     def _preload_default_folder(self):
         default_folder_path = ASSETS_DIR / "default folder"
@@ -237,19 +792,64 @@ class Renderer:
             }
     
     def set_grid_size(self, rows: int, cols: int):
-        """Change grid size (used by zoom in/out)."""
+        """Change grid size with animation (used by zoom in/out)."""
         if rows <= 0 or cols <= 0:
             return
-
+        
+        current_rows = int(round(self._current_grid_rows))
+        current_cols = int(round(self._current_grid_cols))
+        
+        if current_rows == rows and current_cols == cols:
+            return
+        
+        # Reset zoom ended flag at start of new zoom
+        self._zoom_ended_needs_snap = False
+        
+        # Capture current positions for visible items (for smooth transition)
+        self._zoom_item_positions = {}
+        for idx, pos in enumerate(self.grid_positions):
+            if idx < 30:  # Cache first 30 items
+                self._zoom_item_positions[idx] = pos
+        
+        # Clear resize cache at start of new zoom
+        self._resize_cache.clear()
+        
+        # Calculate current cell sizes for smooth animation
+        if hasattr(self, '_last_grid_w') and hasattr(self, '_last_grid_h'):
+            grid_w = self._last_grid_w
+            grid_h = self._last_grid_h
+        else:
+            grid_w = 400
+            grid_h = 300
+        
+        avail_w = grid_w - 2 * self.GRID_OUTER_PADDING - (current_cols - 1) * self.GRID_PADDING
+        avail_h = grid_h - 2 * self.GRID_OUTER_PADDING - (current_rows - 1) * self.GRID_PADDING
+        self._zoom_from_cell_w = avail_w / current_cols if current_cols > 0 else 50
+        self._zoom_from_cell_h = avail_h / current_rows if current_rows > 0 else 50
+        
+        # Calculate target cell sizes (based on target rows/cols)
+        avail_w_to = grid_w - 2 * self.GRID_OUTER_PADDING - (cols - 1) * self.GRID_PADDING
+        avail_h_to = grid_h - 2 * self.GRID_OUTER_PADDING - (rows - 1) * self.GRID_PADDING
+        self._zoom_to_cell_w = avail_w_to / cols if cols > 0 else 50
+        self._zoom_to_cell_h = avail_h_to / rows if rows > 0 else 50
+        
+        # Start zoom animation
+        self._zoom_anim_from = (current_rows, current_cols)
+        self._zoom_anim_to = (rows, cols)
+        self._zoom_anim_start = time.perf_counter()
+        
+        # Update target grid size (but don't rebuild items yet)
         self.GRID_ROWS = rows
         self.GRID_COLS = cols
-
-        # Clamp selection index
-        max_index = rows * cols - 1
-        self.selected_index = min(self.selected_index, max_index)
-
-        # Grid affects layout → invalidate cache
-        self._invalidate_static_cache()
+        
+        # Clamp selection to visible grid when zooming
+        max_visible_index = rows * self.GRID_COLS - 1
+        if self.selected_index > max_visible_index:
+            self.selected_index = max_visible_index
+        self.grid_scroll_x = 0  # Reset scroll on zoom
+        self._grid_scroll_target = 0  # Reset scroll target
+        self._grid_scroll_from = 0  # Reset scroll from
+        self._grid_scroll_start = None  # Stop any scroll animation
     
     def set_default_folder_color(self, color_name: str):
         """Change the default folder color at runtime and refresh grid display."""
@@ -313,16 +913,23 @@ class Renderer:
             print("[DEBUG] Default folder icon not found for new color")
 
         # Force redraw on next composite
-        self._invalidate_static_cache()    
+        self._grid_items_dirty = True
+        self._invalidate_static_cache()
     def _load_rgba(self, path: Path, fallback: Path | None = None):
         if path and path.exists():
             try:
-                return Image.open(path).convert("RGBA")
+                img = Image.open(path)
+                if getattr(img, "is_animated", False):
+                    return img
+                return img.convert("RGBA")
             except Exception as e:
                 print(f"[DEBUG] Failed to open image: {path} -> {e}")
         if fallback and fallback.exists():
             try:
-                return Image.open(fallback).convert("RGBA")
+                img = Image.open(fallback)
+                if getattr(img, "is_animated", False):
+                    return img
+                return img.convert("RGBA")
             except Exception as e:
                 print(f"[DEBUG] Failed to open fallback: {fallback} -> {e}")
         return None
@@ -338,35 +945,594 @@ class Renderer:
     
     def _load_frame(self, name: str):
         """Load a device frame by name"""
-        filename = self.FRAME_OPTIONS.get(name, "device_frame_rainbow.png")
-        return self._load_cached_rgba(ASSETS_DIR / filename, PLACEHOLDER_DIR / filename)
+        filename = self.BEZEL_INFO.get(name, ("bezels/ayn thor/rainbow.png", "dual"))[0]
+        return self._load_cached_rgba(ASSETS_DIR / filename)
 
-    def set_frame(self, name: str):
+    def set_bezel(self, name: str):
         """Swap to a different device frame"""
-        if name in self.FRAME_OPTIONS:
-            self.current_frame_name = name
-            self.frame_img = self._load_frame(name)
-            new_w, new_h = self.frame_img.size
-            self._frame_scale = min(new_w / self.FRAME_WIDTH, new_h / self.FRAME_HEIGHT)
-
+        if name in self.BEZEL_OPTIONS:
+            self.current_bezel_name = name
+            self.bezel_img = self._load_frame(name)
+            
+            # Apply device settings (reloads device.json from bezel folder)
+            
+            # Get folder name from BEZEL_INFO
+            bezel_info = self.BEZEL_INFO.get(name, ("", "unknown"))
+            folder_name = bezel_info[1] if len(bezel_info) > 1 else "unknown"
+            
+            # Apply device settings
+            self.apply_device_settings(folder_name)
+            
+            if self.bezel_img:
+                new_w, new_h = self.bezel_img.size
+                self._frame_scale = min(new_w / self.FRAME_WIDTH, new_h / self.FRAME_HEIGHT)
+                self._detect_screen_positions()
+                self._update_screen_mode()
+                # Reset selection animation to snap to new position
+                self._reset_selection_animation()
             self._invalidate_static_cache()
+            # Clear resize cache to ensure ss_mask and other bezel-specific images are re-rendered
+            self._resize_cache.clear()
+    
+    def _reset_selection_animation(self):
+        """Reset selection animation state so it snaps to new position."""
+        self._selected_anim_x = None
+        self._selected_anim_y = None
+        self._selected_anim_w = None
+        self._selected_anim_h = None
+        self._sel_anim_from = None
+        self._sel_anim_to = None
+        self._sel_anim_start = None
+    
+    def _update_screen_mode(self):
+        """Update screen positions based on current bezel's screen mode."""
+        mode = self.BEZEL_SCREEN_MODE.get(self.current_bezel_name, "dual")
+        
+        if mode == "single":
+            # Single screen mode: bottom screen fills the display
+            self.screen_manager.set_single_screen_mode()
+        else:
+            # Dual screen mode: use standard positions
+            self.screen_manager.set_dual_screen_mode()
+    
+    def _render_ui_elements(self, base, canvas_w, canvas_h, device_x, device_y, scale):
+        """Render UI elements based on screen mode and visibility settings."""
+        mode = self.screen_manager.screen_mode
+        stacked = self._single_screen_stacked
+        
+        main_screen = self.screen_manager.main
+        external_screen = self.screen_manager.external
+        
+        # Calculate screen positions
+        main_x = device_x + round(main_screen.x * scale)
+        main_y = device_y + round(main_screen.y * scale)
+        main_w = round(main_screen.w * scale)
+        main_h = round(main_screen.h * scale)
+        
+        ext_x = device_x + round(external_screen.x * scale)
+        ext_y = device_y + round(external_screen.y * scale)
+        ext_w = round(external_screen.w * scale)
+        ext_h = round(external_screen.h * scale)
+        
+        def paste_ui(img, screen_x, screen_y, screen_w, screen_h, anchor=None):
+            if img is None:
+                return
+            if anchor:
+                screen_type, h_anchor, v_anchor = anchor
+                target_w = screen_w if screen_type == "main" else ext_w
+                target_h = screen_h if screen_type == "main" else ext_h
+                target_x = main_x if screen_type == "main" else ext_x
+                target_y = main_y if screen_type == "main" else ext_y
+                
+                img_w, img_h = img.size
+                new_h = target_h
+                new_w = round(img_w * (new_h / img_h))
+                
+                if h_anchor == "left":
+                    x_offset = 0
+                elif h_anchor == "center":
+                    x_offset = (target_w - new_w) // 2
+                else:
+                    x_offset = target_w - new_w
+                
+                if v_anchor == "top":
+                    y_offset = 0
+                elif v_anchor == "center":
+                    y_offset = (target_h - new_h) // 2
+                else:
+                    y_offset = target_h - new_h
+                
+                key = (id(img), new_w, new_h)
+                resized = self._resize_cache.get(key)
+                if resized is None:
+                    resized = img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                    self._resize_cache[key] = resized
+                base.alpha_composite(resized, (target_x + x_offset, target_y + y_offset))
+            else:
+                key = (id(img), screen_w, screen_h)
+                resized = self._resize_cache.get(key)
+                if resized is None:
+                    resized = img.resize((screen_w, screen_h), Image.Resampling.BILINEAR)
+                    self._resize_cache[key] = resized
+                base.alpha_composite(resized, (screen_x, screen_y))
+        
+        if mode == "dual":
+            # DUAL SCREEN MODE
+            # Bottom screen elements
+            if self.dock_visible and self.ui_d_bottom_dock:
+                paste_ui(self.ui_d_bottom_dock, ext_x, ext_y, ext_w, ext_h, self.ui_d_bottom_dock_anchor)
+            if self.corner_hints_visible and self.ui_d_bottom_left_cornerhints:
+                paste_ui(self.ui_d_bottom_left_cornerhints, ext_x, ext_y, ext_w, ext_h, self.ui_d_bottom_left_cornerhints_anchor)
+            if self.corner_hints_visible and self.ui_d_bottom_right_cornerhints:
+                paste_ui(self.ui_d_bottom_right_cornerhints, ext_x, ext_y, ext_w, ext_h, self.ui_d_bottom_right_cornerhints_anchor)
+            
+            # Top screen elements (time and user are always visible)
+            if self.corner_hints_visible and self.ui_d_top_cornerhints:
+                paste_ui(self.ui_d_top_cornerhints, main_x, main_y, main_w, main_h, self.ui_d_top_cornerhints_anchor)
+            if self.ui_d_top_time:
+                paste_ui(self.ui_d_top_time, main_x, main_y, main_w, main_h, self.ui_d_top_time_anchor)
+            if self.ui_d_top_user:
+                paste_ui(self.ui_d_top_user, main_x, main_y, main_w, main_h, self.ui_d_top_user_anchor)
+        
+        elif mode == "single" and stacked:
+            # SINGLE SCREEN - STACKED mode (true single screen)
+            # Dock uses same image for both single screen modes
+            if self.dock_visible and self.ui_s_dock:
+                paste_ui(self.ui_s_dock, ext_x, ext_y, ext_w, ext_h, self.ui_s_dock_anchor)
+            
+            # Corner hints
+            if self.corner_hints_visible and self.ui_s_ss_left_cornerhints:
+                paste_ui(self.ui_s_ss_left_cornerhints, ext_x, ext_y, ext_w, ext_h, self.ui_s_ss_left_cornerhints_anchor)
+            if self.corner_hints_visible and self.ui_s_ss_right_cornerhints:
+                paste_ui(self.ui_s_ss_right_cornerhints, ext_x, ext_y, ext_w, ext_h, self.ui_s_ss_right_cornerhints_anchor)
+            
+            # Time (always visible)
+            if self.ui_s_ss_time:
+                paste_ui(self.ui_s_ss_time, ext_x, ext_y, ext_w, ext_h, self.ui_s_ss_time_anchor)
+        
+        else:
+            # SINGLE SCREEN - dual mode (top screen off, external only)
+            # Dock
+            if self.dock_visible and self.ui_s_dock:
+                paste_ui(self.ui_s_dock, ext_x, ext_y, ext_w, ext_h, self.ui_s_dock_anchor)
+            
+            # Corner hints
+            if self.corner_hints_visible and self.ui_s_ds_left_cornerhints:
+                paste_ui(self.ui_s_ds_left_cornerhints, ext_x, ext_y, ext_w, ext_h, self.ui_s_ds_left_cornerhints_anchor)
+            if self.corner_hints_visible and self.ui_s_ds_right_cornerhints:
+                paste_ui(self.ui_s_ds_right_cornerhints, ext_x, ext_y, ext_w, ext_h, self.ui_s_ds_right_cornerhints_anchor)
+        
+        # Render app grid at bottom of external/bottom screen
+        self._render_app_grid(base, canvas_w, canvas_h, ext_x, ext_y, ext_w, ext_h, mode, scale)
+    
+    def _render_app_grid(self, base, canvas_w, canvas_h, ext_x, ext_y, ext_w, ext_h, mode, scale):
+        """Render 5 circular app icons evenly distributed in a defined region."""
+        from PIL import ImageDraw
+        
+        if not self._app_images_loaded:
+            return
+        
+        # Get sizes from settings
+        # base_icon_size is the slot size for grid layout
+        # icon_size is the actual rendered size (affected by icon_scale)
+        base_icon_size = round(self.app_grid_icon_size * scale)
+        icon_size = round(base_icon_size * self.app_grid_icon_scale)
+        grid_width = round(self.app_grid_width * scale)
+        y_offset = round(self.app_grid_y_offset * scale)
+        
+        # Constrain grid_width to fit within screen
+        grid_width = min(grid_width, ext_w)
+        
+        # Calculate the region position (always centered horizontally)
+        # Grid area uses base_icon_size for layout
+        center_x = ext_x + ext_w // 2
+        grid_left = center_x - grid_width // 2
+        grid_right = grid_left + grid_width
+        
+        # Position from bottom with y_offset
+        grid_bottom = ext_y + ext_h - y_offset
+        grid_top = grid_bottom - base_icon_size  # Grid area height uses base size
+        
+        # Constrain grid to stay within screen bounds
+        # Top must not go above screen top
+        if grid_top < ext_y:
+            grid_top = ext_y
+            grid_bottom = grid_top + base_icon_size
+        # Bottom must not go below screen bottom
+        if grid_bottom > ext_y + ext_h:
+            grid_bottom = ext_y + ext_h
+            grid_top = grid_bottom - base_icon_size
+            # If icon is too tall, adjust both
+            if grid_top < ext_y:
+                grid_top = ext_y
+                base_icon_size = grid_bottom - grid_top
+        
+        # Store for debug output
+        self._app_grid_debug = {
+            "mode": mode,
+            "screen_w": ext_w,
+            "screen_h": ext_h,
+            "grid_width": grid_width,
+            "base_icon_size": base_icon_size,
+            "icon_size": icon_size,
+            "icon_scale": self.app_grid_icon_scale,
+            "grid_left": grid_left,
+            "grid_right": grid_right,
+            "grid_top": grid_top,
+            "grid_bottom": grid_bottom,
+        }
+        
+        # Draw temporary border around app grid area only in bezel edit mode
+        if self.bezel_edit_mode:
+            border_draw = ImageDraw.Draw(base)
+            border_draw.rectangle(
+                [grid_left, grid_top - 5, grid_right, grid_bottom + 5],
+                outline=(255, 0, 0, 255), width=3
+            )
+        
+        # Calculate spacing for 5 evenly spaced icons centered within the grid width
+        # Use base_icon_size for layout calculations
+        available_width = grid_right - grid_left
+        total_icon_width = 5 * base_icon_size
+        total_gap_space = available_width - total_icon_width
+        gap = total_gap_space // 6 if total_gap_space > 0 else 0
+        
+        # Render each app (up to 5), evenly spaced
+        for i in range(5):
+            # Position: start with gap, then for each icon add gap + base_icon_size
+            # This gives us the top-left corner of each slot
+            slot_x = grid_left + gap + i * (gap + base_icon_size)
+            slot_y = grid_top
+            
+            # Center the scaled icon within the slot
+            icon_x = slot_x + (base_icon_size - icon_size) // 2
+            icon_y = slot_y + (base_icon_size - icon_size) // 2
+            
+            # Get the app image (or None if not enough)
+            app_img = self._app_images[i] if i < len(self._app_images) else None
+            
+            if app_img is not None and self.populated_apps_visible:
+                # Resize app image to fit within the circle
+                resized = app_img.resize((icon_size, icon_size), Image.Resampling.BILINEAR)
+                
+                # Create circular mask
+                circle_mask = Image.new("L", (icon_size, icon_size), 0)
+                draw = ImageDraw.Draw(circle_mask)
+                draw.ellipse((0, 0, icon_size - 1, icon_size - 1), fill=255)
+                
+                # Apply circular mask
+                circular_app = Image.new("RGBA", (icon_size, icon_size), (0, 0, 0, 0))
+                circular_app.paste(resized, (0, 0))
+                circular_app.putalpha(circle_mask)
+                
+                # Composite onto base
+                base.alpha_composite(circular_app, (icon_x, icon_y))
+            elif app_img is None and self.app_grid_visible:
+                # Empty slot: draw white circle (only if app_grid_visible is True)
+                circular_app = Image.new("RGBA", (icon_size, icon_size), (0, 0, 0, 0))
+                draw = ImageDraw.Draw(circular_app)
+                draw.ellipse((0, 0, icon_size - 1, icon_size - 1), fill=(255, 255, 255, 255))
+                
+                # Composite onto base
+                base.alpha_composite(circular_app, (icon_x, icon_y))
+        
+        # Draw magnify window in bezel edit mode (hide handles in zoom view)
+        if self.bezel_edit_mode:
+            # Draw magnify window (lightweight - just crops and scales, no complex calculations)
+            self._render_magnify_window(base, canvas_w, canvas_h, grid_left, grid_top, grid_right, grid_bottom, icon_size)
+    
+    def _render_magnify_window(self, base, canvas_w, canvas_h, grid_left, grid_top, grid_right, grid_bottom, icon_size):
+        """Render a magnified view centered on mouse position, clamped to canvas bounds."""
+        from PIL import ImageDraw
+        
+        # Magnify window size and position (use instance attribute)
+        mag_size = self.magnify_size
+        mag_margin = 20
+        mag_x = canvas_w - mag_size - mag_margin
+        mag_y = canvas_h - mag_size - mag_margin
+        
+        # Zoom level - scales with window size
+        zoom = getattr(self, 'magnify_zoom', 2.0)
+        
+        # Get mouse position (default to center of app grid if not set)
+        mouse_x = getattr(self, 'mouse_x', (grid_left + grid_right) // 2)
+        mouse_y = getattr(self, 'mouse_y', (grid_top + grid_bottom) // 2)
+        
+        # Calculate the source region to zoom (centered on mouse)
+        src_half = int(mag_size / zoom / 2)
+        
+        # Clamp the source region to stay within canvas bounds
+        src_left = mouse_x - src_half
+        src_top = mouse_y - src_half
+        src_right = mouse_x + src_half
+        src_bottom = mouse_y + src_half
+        
+        # Adjust if region goes outside canvas
+        if src_left < 0:
+            src_right -= src_left
+            src_left = 0
+        if src_top < 0:
+            src_bottom -= src_top
+            src_top = 0
+        if src_right > canvas_w:
+            src_left -= (src_right - canvas_w)
+            src_right = canvas_w
+        if src_bottom > canvas_h:
+            src_top -= (src_bottom - canvas_h)
+            src_bottom = canvas_h
+        
+        # Final clamp to ensure we don't go negative
+        src_left = max(0, src_left)
+        src_top = max(0, src_top)
+        src_right = min(canvas_w, src_right)
+        src_bottom = min(canvas_h, src_bottom)
+        
+        # Crop and resize the region
+        if src_right > src_left and src_bottom > src_top:
+            try:
+                region = base.crop((src_left, src_top, src_right, src_bottom))
+                magnified = region.resize((mag_size, mag_size), Image.Resampling.NEAREST)
+                
+                # Draw background for magnify window
+                draw = ImageDraw.Draw(base)
+                draw.rectangle(
+                    [mag_x - 2, mag_y - 2, mag_x + mag_size + 2, mag_y + mag_size + 2],
+                    fill=(40, 40, 40, 200), outline=(100, 100, 100, 255), width=2
+                )
+                
+                # Paste magnified region
+                base.alpha_composite(magnified, (mag_x, mag_y))
+                
+                # Draw border around magnify window
+                draw.rectangle(
+                    [mag_x, mag_y, mag_x + mag_size, mag_y + mag_size],
+                    outline=(255, 255, 255, 255), width=1
+                )
+            except Exception:
+                pass  # Skip if cropping fails
+    
+    def _render_app_grid_controls(self, base, canvas_w, canvas_h):
+        """Render app grid controls (directional arrows and size controls) on top of everything."""
+        self._render_directional_arrows(base, canvas_w, canvas_h)
+    
+    def _render_directional_arrows(self, base, canvas_w, canvas_h):
+        """Render directional arrows in the bottom left corner for moving the app grid, plus width/height controls to the right."""
+        from PIL import ImageDraw
+        
+        # Arrow area position (left side - position controls)
+        arrow_margin = 20
+        arrow_size = 25
+        pos_center_x = arrow_margin + arrow_size + 5
+        pos_center_y = canvas_h - arrow_margin - arrow_size - 30
+        
+        draw = ImageDraw.Draw(base)
+        
+        # Draw background circle for position controls
+        draw.ellipse(
+            [pos_center_x - arrow_size - 5, pos_center_y - arrow_size - 5, 
+             pos_center_x + arrow_size + 5, pos_center_y + arrow_size + 5],
+            fill=(40, 40, 40, 180), outline=(100, 100, 100, 255), width=2
+        )
+        
+        arrow_color = (255, 255, 255, 255)
+        
+        # Up arrow
+        draw.polygon([
+            (pos_center_x, pos_center_y - arrow_size),
+            (pos_center_x - 8, pos_center_y - arrow_size + 15),
+            (pos_center_x + 8, pos_center_y - arrow_size + 15)
+        ], fill=arrow_color)
+        
+        # Down arrow
+        draw.polygon([
+            (pos_center_x, pos_center_y + arrow_size),
+            (pos_center_x - 8, pos_center_y + arrow_size - 15),
+            (pos_center_x + 8, pos_center_y + arrow_size - 15)
+        ], fill=arrow_color)
+        
+        # Left arrow
+        draw.polygon([
+            (pos_center_x - arrow_size, pos_center_y),
+            (pos_center_x - arrow_size + 15, pos_center_y - 8),
+            (pos_center_x - arrow_size + 15, pos_center_y + 8)
+        ], fill=arrow_color)
+        
+        # Right arrow
+        draw.polygon([
+            (pos_center_x + arrow_size, pos_center_y),
+            (pos_center_x + arrow_size - 15, pos_center_y - 8),
+            (pos_center_x + arrow_size - 15, pos_center_y + 8)
+        ], fill=arrow_color)
+        
+        # Size controls (to the RIGHT of arrows)
+        size_center_x = pos_center_x + arrow_size + 60  # To the right of arrows
+        size_center_y = pos_center_y
+        
+        # Draw background rectangle for size controls (wider for W/H controls)
+        draw.rounded_rectangle(
+            [size_center_x - 50, size_center_y - 20, size_center_x + 75, size_center_y + 20],
+            radius=8, fill=(40, 40, 40, 180), outline=(100, 100, 100, 255), width=2
+        )
+        
+        size_color = (100, 200, 255, 255)  # Cyan for sizing
+        
+        # Width controls (left side of size panel)
+        # Minus button
+        draw.rectangle(
+            [size_center_x - 45, size_center_y - 3, size_center_x - 30, size_center_y + 3],
+            fill=size_color
+        )
+        
+        # Label "W"
+        draw.text((size_center_x - 20, size_center_y - 8), "W", fill=size_color)
+        
+        # Plus button (horizontal bar)
+        draw.rectangle(
+            [size_center_x - 5, size_center_y - 3, size_center_x + 10, size_center_y + 3],
+            fill=size_color
+        )
+        # Plus button (vertical bar)
+        draw.rectangle(
+            [size_center_x, size_center_y - 7, size_center_x + 5, size_center_y + 7],
+            fill=size_color
+        )
+        
+        # Icon size controls (right side of size panel)
+        # Minus button
+        draw.rectangle(
+            [size_center_x + 20, size_center_y - 3, size_center_x + 35, size_center_y + 3],
+            fill=size_color
+        )
+        
+        # Label "H" (for icon Height)
+        draw.text((size_center_x + 40, size_center_y - 8), "H", fill=size_color)
+        
+        # Plus button (horizontal bar)
+        draw.rectangle(
+            [size_center_x + 55, size_center_y - 3, size_center_x + 70, size_center_y + 3],
+            fill=size_color
+        )
+        # Plus button (vertical bar)
+        draw.rectangle(
+            [size_center_x + 60, size_center_y - 7, size_center_x + 65, size_center_y + 7],
+            fill=size_color
+        )
+        
+        # Store control positions for click detection
+        self._app_grid_controls = {
+            "arrow_center_x": pos_center_x,
+            "arrow_center_y": pos_center_y,
+            "arrow_size": arrow_size,
+            "size_center_x": size_center_x,
+            "size_center_y": size_center_y,
+        }
+    
+    def _render_drag_handles(self, base, grid_left, grid_right, grid_top, grid_bottom):
+        """Render draggable handles on the middle of each edge (red to match border)."""
+        from PIL import ImageDraw
+        
+        draw = ImageDraw.Draw(base)
+        handle_color = (255, 0, 0, 255)  # Red to match app grid border
+        handle_size = 8
+        
+        # Top edge handle (center)
+        draw.ellipse([
+            (grid_left + grid_right) // 2 - handle_size, grid_top - handle_size,
+            (grid_left + grid_right) // 2 + handle_size, grid_top + handle_size
+        ], fill=handle_color, outline=(200, 0, 0, 255))
+        
+        # Bottom edge handle (center)
+        draw.ellipse([
+            (grid_left + grid_right) // 2 - handle_size, grid_bottom - handle_size,
+            (grid_left + grid_right) // 2 + handle_size, grid_bottom + handle_size
+        ], fill=handle_color, outline=(200, 0, 0, 255))
+        
+        # Left edge handle (center)
+        draw.ellipse([
+            grid_left - handle_size, (grid_top + grid_bottom) // 2 - handle_size,
+            grid_left + handle_size, (grid_top + grid_bottom) // 2 + handle_size
+        ], fill=handle_color, outline=(200, 0, 0, 255))
+        
+        # Right edge handle (center)
+        draw.ellipse([
+            grid_right - handle_size, (grid_top + grid_bottom) // 2 - handle_size,
+            grid_right + handle_size, (grid_top + grid_bottom) // 2 + handle_size
+        ], fill=handle_color, outline=(200, 0, 0, 255))
+    
+    def _detect_screen_positions(self):
+        """Detect screen positions from the frame image"""
+        if self.bezel_img:
+            frame_w, frame_h = self.bezel_img.size
+            self.screen_manager.set_frame_dimensions(frame_w, frame_h)
+            self.screen_manager.set_frame_scale(self._frame_scale)
+
+    @property
+    def wallpaper_top(self):
+        return self.screen_manager.main.wallpaper
+    
+    @wallpaper_top.setter
+    def wallpaper_top(self, value):
+        self.screen_manager.main.set_wallpaper(value)
+    
+    @property
+    def wallpaper_top_frames(self):
+        return self.screen_manager.main.wallpaper_frames
+    
+    @wallpaper_top_frames.setter
+    def wallpaper_top_frames(self, value):
+        self.screen_manager.main.wallpaper_frames = value
+    
+    @property
+    def wallpaper_top_index(self):
+        return self.screen_manager.main.wallpaper_index
+    
+    @wallpaper_top_index.setter
+    def wallpaper_top_index(self, value):
+        self.screen_manager.main.wallpaper_index = value
+    
+    @property
+    def wallpaper_top_duration(self):
+        return self.screen_manager.main.wallpaper_duration
+    
+    @wallpaper_top_duration.setter
+    def wallpaper_top_duration(self, value):
+        self.screen_manager.main.wallpaper_duration = value
+
+    @property
+    def wallpaper_bottom(self):
+        return self.screen_manager.external.wallpaper
+    
+    @wallpaper_bottom.setter
+    def wallpaper_bottom(self, value):
+        self.screen_manager.external.set_wallpaper(value)
+    
+    @property
+    def wallpaper_bottom_frames(self):
+        return self.screen_manager.external.wallpaper_frames
+    
+    @wallpaper_bottom_frames.setter
+    def wallpaper_bottom_frames(self, value):
+        self.screen_manager.external.wallpaper_frames = value
+    
+    @property
+    def wallpaper_bottom_index(self):
+        return self.screen_manager.external.wallpaper_index
+    
+    @wallpaper_bottom_index.setter
+    def wallpaper_bottom_index(self, value):
+        self.screen_manager.external.wallpaper_index = value
+    
+    @property
+    def wallpaper_bottom_duration(self):
+        return self.screen_manager.external.wallpaper_duration
+    
+    @wallpaper_bottom_duration.setter
+    def wallpaper_bottom_duration(self, value):
+        self.screen_manager.external.wallpaper_duration = value
 
     def _apply_mask(self, img: Image.Image, mask: Image.Image):
-        """Apply mask: white = visible, transparency = invisible"""
+        """Apply mask using alpha channel: opaque = visible, transparent = hidden"""
         if not img or not mask:
             return None
         img_resized = img.resize(mask.size, Image.Resampling.BILINEAR)
-        if mask.mode != "L":
-            alpha = mask.split()[3] if mask.mode == "RGBA" else None
-            mask = mask.convert("L")
-            if alpha:
-                mask = Image.composite(mask, Image.new("L", mask.size, 0), alpha)
-        return Image.composite(img_resized, Image.new("RGBA", mask.size, (0, 0, 0, 0)), mask)
+        
+        # Extract alpha channel from mask for transparency-based masking
+        if mask.mode == "RGBA":
+            mask_alpha = mask.split()[3]  # Get alpha channel
+        elif mask.mode == "LA":
+            mask_alpha = mask.split()[1]  # Get alpha channel from LA
+        elif mask.mode == "L":
+            mask_alpha = mask  # Already grayscale, use as-is
+        else:
+            mask_alpha = mask.convert("L")  # Convert to grayscale
+        
+        return Image.composite(img_resized, Image.new("RGBA", mask.size, (0, 0, 0, 0)), mask_alpha)
 
     def _get_random_game_image(self, name: str):
         """Return a random variant of the game image for this platform name.
         Fallback to any platform if no images exist for this name.
         Avoid duplicates if possible.
+        Returns dict with 'img', 'frames', 'index', 'duration' for animated images.
         """
         paths = self._game_path_lookup.get(name)
 
@@ -389,7 +1555,23 @@ class Renderer:
         if selected_path not in self._game_image_cache:
             img = self._load_rgba(selected_path)
             if img:
-                self._game_image_cache[selected_path] = img
+                # Check if animated
+                if getattr(img, "is_animated", False):
+                    frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
+                    duration = img.info.get("duration", 100)
+                    self._game_image_cache[selected_path] = {
+                        "img": frames[0],
+                        "frames": frames,
+                        "index": 0,
+                        "duration": duration
+                    }
+                else:
+                    self._game_image_cache[selected_path] = {
+                        "img": img.convert("RGBA") if img.mode != "RGBA" else img,
+                        "frames": None,
+                        "index": 0,
+                        "duration": 100
+                    }
 
         return self._game_image_cache.get(selected_path)
     
@@ -417,22 +1599,36 @@ class Renderer:
     # -----------------------------
     # Background fitting
     # -----------------------------
-    def _fit_background(self, base: Image.Image, bg: Image.Image, device_rect: tuple[int,int,int,int]):
+    def _fit_background(self, base: Image.Image, bg: Image.Image, canvas_size: tuple[int,int], device_rect: tuple[int,int,int,int]):
         """
-        Fit the bg image to the height of the device area and center horizontally.
+        Fit the bg image to the height of the canvas (not device area).
+        If canvas grows too wide (fitted wallpaper doesn't reach canvas edges), stretch to fill.
+        canvas_size = (canvas_w, canvas_h)
         device_rect = (device_x, device_y, device_w, device_h)
         """
         if not bg:
             return
-        device_x, device_y, device_w, device_h = device_rect
+        canvas_w, canvas_h = canvas_size
         bw, bh = bg.size
-        scale = device_h / bh
+        
+        # Calculate fitted bg size (fit to canvas height, center horizontally)
+        scale = canvas_h / bh
         new_w = int(bw * scale)
-        new_h = device_h
-        bg_resized = bg.resize((new_w, new_h), Image.Resampling.BILINEAR)
-        x = device_x + (device_w - new_w) // 2
-        y = device_y
-        base.alpha_composite(bg_resized, (x, y))
+        new_h = canvas_h
+        
+        # Center horizontally on device area
+        device_x, device_y, device_w, device_h = device_rect
+        fitted_x = device_x + (device_w - new_w) // 2
+        
+        # Check if fitted wallpaper is narrower than canvas (canvas too wide)
+        if new_w < canvas_w:
+            # Stretch to fill entire canvas
+            bg_resized = bg.resize((canvas_w, canvas_h), Image.Resampling.BILINEAR)
+            base.alpha_composite(bg_resized, (0, 0))
+        else:
+            # Regular fit - wallpaper is wide enough, just center it
+            bg_resized = bg.resize((new_w, new_h), Image.Resampling.BILINEAR)
+            base.alpha_composite(bg_resized, (fitted_x, 0))
 
     # Video First Frame
     
@@ -458,7 +1654,20 @@ class Renderer:
         except Exception as e:
             print(f"Video decode failed for {path}: {e}")
 
-        return None
+            return None
+    
+    def _load_image_with_exif(self, path: Path) -> Image.Image | None:
+        """Load an image and apply EXIF orientation correction if needed."""
+        try:
+            img = Image.open(path)
+            # Only apply EXIF transpose for non-animated images
+            # (exif_transpose destroys animation frames)
+            if not getattr(img, "is_animated", False):
+                img = ImageOps.exif_transpose(img)
+            return img
+        except Exception as e:
+            print(f"Failed to load image {path}: {e}")
+            return None
     
     # -----------------------------
     # Theme Loading
@@ -468,6 +1677,7 @@ class Renderer:
         self._static_cache_image = None
         self._static_cache_size = None
         self._static_cache_dirty = True
+        self._grid_items_dirty = True
 
         # Also clear resize cache so old wallpaper sizes aren't reused
         self._resize_cache.clear()
@@ -509,6 +1719,7 @@ class Renderer:
 
         bottom_candidates = [
             "external.png","bottom.png",
+            "external.jpg","external.jpeg","bottom.jpg","bottom.jpeg",
             "external.gif","bottom.gif",
             "external.webp","bottom.webp",
             "external.mp4","bottom.mp4",
@@ -547,16 +1758,21 @@ class Renderer:
                     if not img:
                         continue
                 else:
-                    img = Image.open(path_file)
+                    img = self._load_image_with_exif(path_file)
+                    if img is None:
+                        continue
 
                 if getattr(img, "is_animated", False):
-                    self.wallpaper_top_frames = [
-                        frame.convert("RGBA") for frame in ImageSequence.Iterator(img)
-                    ]
-                    self.wallpaper_top_duration = img.info.get("duration", 100)
-                    self.wallpaper_top = self.wallpaper_top_frames[0]
+                    frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
+                    duration = img.info.get("duration", 100)
+                    # Set directly on screen manager to avoid setter clearing frames
+                    self.screen_manager.main.wallpaper_frames = frames
+                    self.screen_manager.main.wallpaper_index = 0
+                    self.screen_manager.main.wallpaper_duration = duration
+                    self.screen_manager.main.wallpaper = frames[0]
                 else:
-                    self.wallpaper_top = img.convert("RGBA")
+                    self.screen_manager.main.wallpaper = img.convert("RGBA")
+                    self.screen_manager.main.wallpaper_frames = []
 
             except Exception as e:
                 print(f"Failed to load wallpaper {fname}: {e}")
@@ -564,18 +1780,24 @@ class Renderer:
 
             break
 
-        if not self.wallpaper_top:
+        if not self.screen_manager.main.wallpaper:
             for fname in top_candidates:
                 placeholder_file = PLACEHOLDER_DIR / "wallpapers" / fname
                 if placeholder_file.exists():
                     try:
-                        img = Image.open(placeholder_file)
+                        img = self._load_image_with_exif(placeholder_file)
+                        if img is None:
+                            continue
                         if getattr(img, "is_animated", False):
-                            self.wallpaper_top_frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
-                            self.wallpaper_top_duration = img.info.get("duration", 100)
-                            self.wallpaper_top = self.wallpaper_top_frames[0]
+                            frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
+                            duration = img.info.get("duration", 100)
+                            self.screen_manager.main.wallpaper_frames = frames
+                            self.screen_manager.main.wallpaper_index = 0
+                            self.screen_manager.main.wallpaper_duration = duration
+                            self.screen_manager.main.wallpaper = frames[0]
                         else:
-                            self.wallpaper_top = img.convert("RGBA")
+                            self.screen_manager.main.wallpaper = img.convert("RGBA")
+                            self.screen_manager.main.wallpaper_frames = []
                     except Exception:
                         continue
                     break
@@ -606,16 +1828,21 @@ class Renderer:
                     if not img:
                         continue
                 else:
-                    img = Image.open(path_file)
+                    img = self._load_image_with_exif(path_file)
+                    if img is None:
+                        continue
 
                 if getattr(img, "is_animated", False):
-                    self.wallpaper_bottom_frames = [
-                        frame.convert("RGBA") for frame in ImageSequence.Iterator(img)
-                    ]
-                    self.wallpaper_bottom_duration = img.info.get("duration", 100)
-                    self.wallpaper_bottom = self.wallpaper_bottom_frames[0]
+                    frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
+                    duration = img.info.get("duration", 100)
+                    # Set directly on screen manager to avoid setter clearing frames
+                    self.screen_manager.external.wallpaper_frames = frames
+                    self.screen_manager.external.wallpaper_index = 0
+                    self.screen_manager.external.wallpaper_duration = duration
+                    self.screen_manager.external.wallpaper = frames[0]
                 else:
-                    self.wallpaper_bottom = img.convert("RGBA")
+                    self.screen_manager.external.wallpaper = img.convert("RGBA")
+                    self.screen_manager.external.wallpaper_frames = []
 
             except Exception as e:
                 print(f"Failed to load wallpaper {fname}: {e}")
@@ -623,18 +1850,22 @@ class Renderer:
 
             break
 
-        if not self.wallpaper_bottom:
+        if not self.screen_manager.external.wallpaper:
             for fname in bottom_candidates:
                 placeholder_file = PLACEHOLDER_DIR / "wallpapers" / fname
                 if placeholder_file.exists():
                     try:
                         img = Image.open(placeholder_file)
                         if getattr(img, "is_animated", False):
-                            self.wallpaper_bottom_frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
-                            self.wallpaper_bottom_duration = img.info.get("duration", 100)
-                            self.wallpaper_bottom = self.wallpaper_bottom_frames[0]
+                            frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
+                            duration = img.info.get("duration", 100)
+                            self.screen_manager.external.wallpaper_frames = frames
+                            self.screen_manager.external.wallpaper_index = 0
+                            self.screen_manager.external.wallpaper_duration = duration
+                            self.screen_manager.external.wallpaper = frames[0]
                         else:
-                            self.wallpaper_bottom = img.convert("RGBA")
+                            self.screen_manager.external.wallpaper = img.convert("RGBA")
+                            self.screen_manager.external.wallpaper_frames = []
                     except Exception:
                         continue
                     break
@@ -725,6 +1956,7 @@ class Renderer:
 
             # Skip smart folder entirely if no icon
             if not icon:
+                print(f"[WARN] Smart folder skipped (no icon): {folder_path}")
                 return False
 
             # ---------------------------------
@@ -864,34 +2096,124 @@ class Renderer:
                 overlay_path = chosen_folder / "overlay.png"
                 mask_path = chosen_folder / "mask.png"
                 if not overlay_path.exists() or not mask_path.exists():
+                    print(f"[WARN] Icon overlay skipped (missing overlay.png or mask.png): {chosen_folder}")
                     continue  # skip this variant entirely
 
                 # Load images
                 overlay = self._load_cached_rgba(overlay_path)
                 mask = self._load_cached_rgba(mask_path)
                 if not overlay or not mask:
+                    print(f"[WARN] Icon overlay skipped (failed to load images): {chosen_folder}")
                     continue  # just in case loading failed
 
                 # Pick random game image variant for this base platform
-                game_img = self._get_random_game_image(base_name)
-                if mask and game_img:
-                    game_img = self._apply_mask(game_img, mask)
+                game_data = self._get_random_game_image(base_name)
+                if game_data and mask:
+                    # Create a COPY of the game data to avoid modifying cached images
+                    import copy
+                    game_data_copy = {
+                        "img": game_data["img"].copy() if game_data["img"] else None,
+                        "frames": [f.copy() for f in game_data["frames"]] if game_data["frames"] else None,
+                        "index": game_data["index"],
+                        "duration": game_data["duration"]
+                    }
+                    # Apply mask to the copy
+                    masked_img = self._apply_mask(game_data_copy["img"], mask)
+                    game_data_copy["img"] = masked_img
+                    # Also apply mask to all frames if animated
+                    if game_data_copy["frames"]:
+                        game_data_copy["frames"] = [self._apply_mask(f, mask) for f in game_data_copy["frames"]]
+                    game_data = game_data_copy
 
                 # Register overlay using base platform name
                 self.icon_overlays[base_name] = {
                     "mask": mask,
                     "overlay": overlay,
-                    "game_img": game_img,
+                    "game_data": game_data,
                 }
 
                 remaining_slots -= 1
 
-        total_slots = self.GRID_ROWS * self.GRID_COLS
-        self.selected_index = max(0, min(self.selected_index, total_slots - 1))
+        # Clamp selection to available items
+        if self.grid_items:
+            self.selected_index = max(0, min(self.selected_index, len(self.grid_items) - 1))
         
+        # Load random app images for bottom screen
+        self._load_app_images()
+    
+    def _load_app_images(self):
+        """Load 5 random app images from assets/apps folder."""
+        apps_dir = ASSETS_DIR / "apps"
+        if not apps_dir.exists():
+            self._app_images = []
+            self._app_images_loaded = True
+            return
+        
+        # Get all image files from apps folder
+        app_files = []
+        supported_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        for f in apps_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in supported_extensions:
+                app_files.append(f)
+        
+        # Select 5 random images (or fewer if not enough)
+        num_to_select = min(5, len(app_files))
+        if num_to_select > 0:
+            selected = random.sample(app_files, num_to_select)
+            self._app_images = []
+            for f in selected:
+                img = self._load_cached_rgba(f)
+                if img:
+                    self._app_images.append(img)
+        else:
+            self._app_images = []
+        
+        self._app_images_loaded = True
+        self._static_cache_dirty = True
+    
     def _invalidate_static_cache(self):
         """Mark static cache as dirty so it rebuilds next render."""
         self._static_cache_dirty = True
+    
+    def _draw_border(self, img: Image.Image, rect: Tuple[int, int, int, int], color: Tuple[int, int, int, int], thickness: int = 3):
+        """Draw a colored border rectangle on the image."""
+        x, y, w, h = rect
+        # Skip if rect is outside image bounds
+        if x >= img.width or y >= img.height or x + w <= 0 or y + h <= 0:
+            return
+        for i in range(thickness):
+            # Top
+            for px in range(max(0, x), min(x + w, img.width)):
+                py = y + i
+                if 0 <= py < img.height:
+                    img.putpixel((px, py), color)
+            # Bottom
+            for px in range(max(0, x), min(x + w, img.width)):
+                py = y + h - 1 - i
+                if 0 <= py < img.height:
+                    img.putpixel((px, py), color)
+            # Left
+            for py in range(max(0, y), min(y + h, img.height)):
+                px = x + i
+                if 0 <= px < img.width:
+                    img.putpixel((px, py), color)
+            # Right
+            for py in range(max(0, y), min(y + h, img.height)):
+                px = x + w - 1 - i
+                if 0 <= px < img.width:
+                    img.putpixel((px, py), color)
+    
+    def _draw_handle(self, img: Image.Image, x: int, y: int, color: Tuple[int, int, int, int], size: int = 8):
+        """Draw a draggable handle dot."""
+        # Skip if outside bounds
+        if x < -size or x > img.width + size or y < -size or y > img.height + size:
+            return
+        for dy in range(-size, size + 1):
+            for dx in range(-size, size + 1):
+                if dx*dx + dy*dy <= size*size:
+                    px, py = x + dx, y + dy
+                    if 0 <= px < img.width and 0 <= py < img.height:
+                        img.putpixel((px, py), color)
         
     # New animation structure
     
@@ -916,24 +2238,32 @@ class Renderer:
     
     
     def advance_wallpaper_frame(self):
-        if not self.wallpaper_top_frames:
+        if not self.screen_manager.main.wallpaper_frames:
             return
         now = time.perf_counter()
         elapsed = (now - self._last_wallpaper_top_update) * 1000  # ms
-        if elapsed >= self.wallpaper_top_duration:
-            self.wallpaper_top_index = (self.wallpaper_top_index + 1) % len(self.wallpaper_top_frames)
-            self.wallpaper_top = self.wallpaper_top_frames[self.wallpaper_top_index]
-            self._last_wallpaper_top_update = now
+        duration = self.screen_manager.main.wallpaper_duration
+        # Advance frames to catch up to actual elapsed time
+        frames_to_advance = int(elapsed / duration)
+        if frames_to_advance > 0:
+            for _ in range(frames_to_advance):
+                self.screen_manager.main.wallpaper_index = (self.screen_manager.main.wallpaper_index + 1) % len(self.screen_manager.main.wallpaper_frames)
+            # Keep the overshoot time for accurate timing
+            overshoot = elapsed - (frames_to_advance * duration)
+            self._last_wallpaper_top_update = now - (overshoot / 1000)
 
     def advance_bottom_wallpaper_frame(self):
-        if not self.wallpaper_bottom_frames:
+        if not self.screen_manager.external.wallpaper_frames:
             return
         now = time.perf_counter()
         elapsed = (now - self._last_wallpaper_bottom_update) * 1000
-        if elapsed >= self.wallpaper_bottom_duration:
-            self.wallpaper_bottom_index = (self.wallpaper_bottom_index + 1) % len(self.wallpaper_bottom_frames)
-            self.wallpaper_bottom = self.wallpaper_bottom_frames[self.wallpaper_bottom_index]
-            self._last_wallpaper_bottom_update = now
+        duration = self.screen_manager.external.wallpaper_duration
+        frames_to_advance = int(elapsed / duration)
+        if frames_to_advance > 0:
+            for _ in range(frames_to_advance):
+                self.screen_manager.external.wallpaper_index = (self.screen_manager.external.wallpaper_index + 1) % len(self.screen_manager.external.wallpaper_frames)
+            overshoot = elapsed - (frames_to_advance * duration)
+            self._last_wallpaper_bottom_update = now - (overshoot / 1000)
 
     def advance_selected_hero(self):
         """Advance hero animation ONLY for the currently selected grid item."""
@@ -954,12 +2284,16 @@ class Renderer:
 
         last_update = self._last_hero_update[self.selected_index]
         duration = item.get("hero_duration", 100)
-        if (now - last_update) * 1000 >= duration:
-            idx = item.get("hero_index", 0)
-            idx = (idx + 1) % len(frames)
-            item["hero_index"] = idx
-            item["hero"] = frames[idx]
-            self._last_hero_update[self.selected_index] = now
+        elapsed = (now - last_update) * 1000
+        frames_to_advance = int(elapsed / duration)
+        if frames_to_advance > 0:
+            for _ in range(frames_to_advance):
+                idx = item.get("hero_index", 0)
+                idx = (idx + 1) % len(frames)
+                item["hero_index"] = idx
+                item["hero"] = frames[idx]
+            overshoot = elapsed - (frames_to_advance * duration)
+            self._last_hero_update[self.selected_index] = now - (overshoot / 1000)
     
     def advance_selected_logo(self):
         """Advance logo animation if the currently selected grid item has an animated logo."""
@@ -982,15 +2316,46 @@ class Renderer:
 
         last_update = self._last_logo_update[self.selected_index]
         duration = item.get("logo_duration", 100)
-
-        if (now - last_update) * 1000 >= duration:
-            idx = item.get("logo_index", 0)
-            idx = (idx + 1) % len(frames)
-
-            item["logo_index"] = idx
-            item["logo"] = frames[idx]
-
-            self._last_logo_update[self.selected_index] = now
+        elapsed = (now - last_update) * 1000
+        frames_to_advance = int(elapsed / duration)
+        
+        if frames_to_advance > 0:
+            for _ in range(frames_to_advance):
+                idx = item.get("logo_index", 0)
+                idx = (idx + 1) % len(frames)
+                item["logo_index"] = idx
+                item["logo"] = frames[idx]
+            overshoot = elapsed - (frames_to_advance * duration)
+            self._last_logo_update[self.selected_index] = now - (overshoot / 1000)
+    
+    def advance_game_images(self):
+        """Advance game image animations for all visible grid items."""
+        now = time.perf_counter()
+        
+        for idx, item in enumerate(self.grid_items):
+            if not item:
+                continue
+            
+            game_data = item.get("game_data")
+            if not game_data or not game_data.get("frames"):
+                continue
+            
+            # Initialize timing if needed
+            if idx not in self._last_game_update:
+                self._last_game_update[idx] = now
+                continue
+            
+            last_update = self._last_game_update[idx]
+            duration = game_data.get("duration", 100)
+            elapsed = (now - last_update) * 1000
+            frames_to_advance = int(elapsed / duration)
+            
+            if frames_to_advance > 0:
+                for _ in range(frames_to_advance):
+                    game_data["index"] = (game_data["index"] + 1) % len(game_data["frames"])
+                    game_data["img"] = game_data["frames"][game_data["index"]]
+                overshoot = elapsed - (frames_to_advance * duration)
+                self._last_game_update[idx] = now - (overshoot / 1000)
     
     # Rendering
     def composite(self, canvas_size: tuple[int, int], skip_background: bool = False) -> Image.Image:
@@ -1002,8 +2367,6 @@ class Renderer:
         # Force rebuild if canvas size changed
         if canvas_resized:
             self._static_cache_dirty = True
-            # Clear any old resized images
-            self._resize_cache.clear()
 
         # Update last canvas size for animation tracking
         self._last_canvas_size = canvas_size
@@ -1012,19 +2375,23 @@ class Renderer:
         if self._static_cache_image is None or self._static_cache_dirty or self._static_cache_size != canvas_size:
             static_base = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
 
-            # Background (fitted)
-            if not skip_background:
-                self._fit_background(static_base, self.bg_img, (0, 0, canvas_w, canvas_h))
+            # Handle hidden frame
+            if self.bezel_img is None:
+                return static_base
 
             # Scale device to fit within canvas minus padding
             scale = min(
-                (canvas_w - 2 * self.DEVICE_PADDING) / self.frame_img.width,
-                (canvas_h - 2 * self.DEVICE_PADDING) / self.frame_img.height
+                (canvas_w - 2 * self.DEVICE_PADDING) / self.bezel_img.width,
+                (canvas_h - 2 * self.DEVICE_PADDING) / self.bezel_img.height
             )
-            device_w = round(self.frame_img.width * scale)
-            device_h = round(self.frame_img.height * scale)
+            device_w = round(self.bezel_img.width * scale)
+            device_h = round(self.bezel_img.height * scale)
             device_x = self.DEVICE_PADDING + (canvas_w - 2 * self.DEVICE_PADDING - device_w) // 2
             device_y = self.DEVICE_PADDING + (canvas_h - 2 * self.DEVICE_PADDING - device_h) // 2
+
+            # Background (fitted or stretched based on device position)
+            if not skip_background:
+                self._fit_background(static_base, self.bg_img, (canvas_w, canvas_h), (device_x, device_y, device_w, device_h))
 
             def paste(img, x, y, w, h):
                 if not img:
@@ -1036,12 +2403,9 @@ class Renderer:
                     self._resize_cache[key] = resized
                 static_base.alpha_composite(resized, (x, y))
 
-            # UI (static)
-            if self.ui_visible and self.ui_img:
-                paste(self.ui_img, device_x, device_y, device_w, device_h)
-
-            # Frame (static)
-            paste(self.frame_img, device_x, device_y, device_w, device_h)
+            # Frame (static) - skip if hidden
+            if not self.frame_hidden:
+                paste(self.bezel_img, device_x, device_y, device_w, device_h)
 
             # Store static cache
             self._static_cache_image = static_base
@@ -1060,13 +2424,18 @@ class Renderer:
 
         # Scale device to fit (for wallpaper/grid)
         scale = min(
-            (canvas_w - 2 * self.DEVICE_PADDING) / self.frame_img.width,
-            (canvas_h - 2 * self.DEVICE_PADDING) / self.frame_img.height
+            (canvas_w - 2 * self.DEVICE_PADDING) / self.bezel_img.width,
+            (canvas_h - 2 * self.DEVICE_PADDING) / self.bezel_img.height
         )
-        device_w = round(self.frame_img.width * scale)
-        device_h = round(self.frame_img.height * scale)
+        device_w = round(self.bezel_img.width * scale)
+        device_h = round(self.bezel_img.height * scale)
         device_x = self.DEVICE_PADDING + (canvas_w - 2 * self.DEVICE_PADDING - device_w) // 2
         device_y = self.DEVICE_PADDING + (canvas_h - 2 * self.DEVICE_PADDING - device_h) // 2
+
+        self.screen_manager.set_frame_scale(scale)
+
+        main_screen = self.screen_manager.main
+        external_screen = self.screen_manager.external
 
         def paste(img, x, y, w, h):
             if not img:
@@ -1074,62 +2443,287 @@ class Renderer:
             key = (id(img), w, h)
             resized = self._resize_cache.get(key)
             if resized is None:
-                resized = img.resize((w, h), Image.Resampling.BILINEAR)
+                # Use NEAREST during zoom for speed, BILINEAR otherwise
+                resample = Image.Resampling.NEAREST if self._zoom_anim_start is not None else Image.Resampling.BILINEAR
+                resized = img.resize((w, h), resample)
                 self._resize_cache[key] = resized
             base.alpha_composite(resized, (x, y))
 
-        # Animated top wallpaper
-        paste(self.wallpaper_top,
-              device_x + round(self.TOP_SCREEN_X * scale),
-              device_y + round(self.TOP_SCREEN_Y * scale),
-              round(self.TOP_SCREEN_W * scale),
-              round(self.TOP_SCREEN_H * scale))
-
         # Bottom wallpaper
-        paste(self.wallpaper_bottom,
-              device_x + round(self.BOTTOM_SCREEN_X * scale),
-              device_y + round(self.BOTTOM_SCREEN_Y * scale),
-              round(self.BOTTOM_SCREEN_W * scale),
-              round(self.BOTTOM_SCREEN_H * scale))
+        paste(external_screen.get_current_wallpaper(),
+              device_x + round(external_screen.x * scale),
+              device_y + round(external_screen.y * scale),
+              round(external_screen.w * scale),
+              round(external_screen.h * scale))
+
+        # Animated top wallpaper (only in dual screen mode - single screen is handled at end)
+        if self.screen_manager.screen_mode == "dual":
+            main_wallpaper = main_screen.get_current_wallpaper()
+            if main_screen.w > 0 and main_screen.h > 0 and main_wallpaper:
+                paste(main_wallpaper,
+                      device_x + round(main_screen.x * scale),
+                      device_y + round(main_screen.y * scale),
+                      round(main_screen.w * scale),
+                      round(main_screen.h * scale))
+
+        # Debug: draw colored borders around screens
+        if self.draw_debug_borders or self.bezel_edit_mode:
+            main_rect = (
+                device_x + round(main_screen.x * scale),
+                device_y + round(main_screen.y * scale),
+                round(main_screen.w * scale),
+                round(main_screen.h * scale)
+            )
+            ext_rect = (
+                device_x + round(external_screen.x * scale),
+                device_y + round(external_screen.y * scale),
+                round(external_screen.w * scale),
+                round(external_screen.h * scale)
+            )
+            
+            # Debug mode (not bezel edit)
+            if self.draw_debug_borders and not self.bezel_edit_mode:
+                grid_rect_raw = external_screen.get_grid_rect(scale)
+                grid_rect = (
+                    device_x + grid_rect_raw[0],
+                    device_y + grid_rect_raw[1],
+                    grid_rect_raw[2],
+                    grid_rect_raw[3]
+                )
+                
+                # Draw cyan border around main screen (5px thick)
+                self._draw_border(base, main_rect, (0, 255, 255, 255), 5)
+                # Draw yellow border around external screen
+                self._draw_border(base, ext_rect, (255, 255, 0, 255), 5)
+                # Draw magenta border around grid
+                self._draw_border(base, grid_rect, (255, 0, 255, 255), 3)
+                
+                # Draw drag handles - corners and edges
+                if self.debug_drag_mode:
+                    # Main screen (cyan) - corners and edges
+                    mx, my, mw, mh = main_rect
+                    for hx in [mx, mx + mw]:
+                        for hy in [my, my + mh]:
+                            self._draw_handle(base, hx, hy, (0, 255, 255, 255), 8)
+                    # Edges
+                    self._draw_handle(base, mx + mw//2, my, (0, 255, 255, 255), 8)
+                    self._draw_handle(base, mx + mw//2, my + mh, (0, 255, 255, 255), 8)
+                    self._draw_handle(base, mx, my + mh//2, (0, 255, 255, 255), 8)
+                    self._draw_handle(base, mx + mw, my + mh//2, (0, 255, 255, 255), 8)
+                    # Center (move)
+                    self._draw_handle(base, mx + mw//2, my + mh//2, (0, 255, 255, 255), 12)
+                    
+                    # External screen (yellow) - corners and edges
+                    ex, ey, ew, eh = ext_rect
+                    for hx in [ex, ex + ew]:
+                        for hy in [ey, ey + eh]:
+                            self._draw_handle(base, hx, hy, (255, 255, 0, 255), 8)
+                    self._draw_handle(base, ex + ew//2, ey, (255, 255, 0, 255), 8)
+                    self._draw_handle(base, ex + ew//2, ey + eh, (255, 255, 0, 255), 8)
+                    self._draw_handle(base, ex, ey + eh//2, (255, 255, 0, 255), 8)
+                    self._draw_handle(base, ex + ew, ey + eh//2, (255, 255, 0, 255), 8)
+                    # Center (move)
+                    self._draw_handle(base, ex + ew//2, ey + eh//2, (255, 255, 0, 255), 12)
 
         # Grid placement (squared & centered)
-        grid_x = device_x + round(self.BOTTOM_SCREEN_X * scale)
-        grid_y = device_y + round(self.BOTTOM_SCREEN_Y * scale) + round(self.BOTTOM_SCREEN_HT_OFFSET * scale)
-        grid_w = round(self.BOTTOM_SCREEN_W * scale)
-        grid_h = (
-            round(self.BOTTOM_SCREEN_H * scale)
-            - round(self.BOTTOM_SCREEN_HT_OFFSET * scale)
-            - round(self.BOTTOM_SCREEN_HB_OFFSET * scale)
-        )
+        # get_grid_rect returns position relative to frame, need to add device offset
+        grid_rect_raw = external_screen.get_grid_rect(scale)
+        grid_x = device_x + grid_rect_raw[0]
+        grid_y = device_y + grid_rect_raw[1]
+        grid_w, grid_h = grid_rect_raw[2], grid_rect_raw[3]
+        
+        # In single screen mode, shift grid down if main screen overlaps (squish effect)
+        if self.screen_manager.screen_mode == "single":
+            main_screen_bottom = device_y + round(main_screen.y * scale) + round(main_screen.h * scale)
+            if main_screen_bottom > grid_y:
+                overlap = main_screen_bottom - grid_y
+                # Calculate the maximum allowed bottom of grid (bottom of screen minus bottom padding)
+                ext_screen_bottom = device_y + round(external_screen.y * scale) + round(external_screen.h * scale)
+                bottom_padding_scaled = round(Screen.BOTTOM_SCREEN_BOTTOM_PADDING * scale)
+                max_grid_bottom = ext_screen_bottom - bottom_padding_scaled
+                
+                # Shrink grid height by overlap amount
+                grid_h = grid_h - overlap
+                grid_h = max(grid_h, 50)  # minimum height
+                
+                # Position grid so bottom edge stays at max_grid_bottom
+                grid_y = max_grid_bottom - grid_h
 
+        # Store grid dimensions for zoom animation calculations
+        self._last_grid_w = grid_w
+        self._last_grid_h = grid_h
+        self._last_grid_x = grid_x
+        self._last_grid_y = grid_y
 
-        total_slots = self.GRID_ROWS * self.GRID_COLS
+        # Update zoom animation
+        if self._zoom_anim_start is not None:
+            now = time.perf_counter()
+            elapsed = now - self._zoom_anim_start
+            t = min(elapsed / self._zoom_anim_duration, 1.0)
+            
+            # Smoothstep easing
+            t = t * t * (3 - 2 * t)
+            
+            if self._zoom_anim_from and self._zoom_anim_to:
+                from_rows, from_cols = self._zoom_anim_from
+                to_rows, to_cols = self._zoom_anim_to
+                
+                self._current_grid_rows = from_rows + (to_rows - from_rows) * t
+                self._current_grid_cols = from_cols + (to_cols - from_cols) * t
+                
+                if t >= 1.0:
+                    self._current_grid_rows = to_rows
+                    self._current_grid_cols = to_cols
+                    self._zoom_anim_start = None
+                    self._zoom_item_positions = {}  # Clear cached positions
+                    self._zoom_ended_needs_snap = True  # Continue selection animation after zoom
 
-        avail_w = grid_w - 2 * self.GRID_OUTER_PADDING - (self.GRID_COLS - 1) * self.GRID_PADDING
-        avail_h = grid_h - 2 * self.GRID_OUTER_PADDING - (self.GRID_ROWS - 1) * self.GRID_PADDING
-        cell_size = min(avail_w // self.GRID_COLS, avail_h // self.GRID_ROWS)
-        cell_w = cell_h = cell_size
+        # Animate scroll position
+        if self._grid_scroll_start is not None:
+            now = time.perf_counter()
+            elapsed = now - self._grid_scroll_start
+            t = min(elapsed / self._grid_scroll_duration, 1.0)
+            
+            # Smoothstep easing
+            t = t * t * (3 - 2 * t)
+            
+            # Interpolate from start to target
+            if hasattr(self, '_grid_scroll_from'):
+                self.grid_scroll_x = self._grid_scroll_from + (self._grid_scroll_target - self._grid_scroll_from) * t
+            
+            if t >= 1.0:
+                self.grid_scroll_x = self._grid_scroll_target
+                self._grid_scroll_start = None
 
-        extra_w = avail_w - cell_w * self.GRID_COLS
-        extra_h = avail_h - cell_h * self.GRID_ROWS
-        offset_x = self.GRID_OUTER_PADDING + extra_w // 2
-        offset_y = self.GRID_OUTER_PADDING + extra_h // 2
+        # Use current grid size for rendering
+        target_rows = self.GRID_ROWS
+        target_cols = self.GRID_COLS
+        
+        # Animate cell sizes during zoom using cached values
+        if self._zoom_anim_start is not None and self._zoom_from_cell_w > 0:
+            # Interpolate using cached cell sizes
+            from_rows, from_cols = self._zoom_anim_from
+            progress = (self._current_grid_rows - from_rows) / (self.GRID_ROWS - from_rows) if self.GRID_ROWS != from_rows else 1.0
+            # Round to nearest 2px to reduce resize operations during zoom
+            cell_w = round((self._zoom_from_cell_w + (self._zoom_to_cell_w - self._zoom_from_cell_w) * progress) / 2) * 2
+            cell_h = round((self._zoom_from_cell_h + (self._zoom_to_cell_h - self._zoom_from_cell_h) * progress) / 2) * 2
+        else:
+            # Calculate cell sizes based on current visible grid size (rows AND cols)
+            avail_w = grid_w - 2 * self.GRID_OUTER_PADDING - (self.GRID_COLS - 1) * self.GRID_PADDING
+            avail_h = grid_h - 2 * self.GRID_OUTER_PADDING - (self.GRID_ROWS - 1) * self.GRID_PADDING
+            cell_w = round(avail_w / self.GRID_COLS)
+            cell_h = round(avail_h / self.GRID_ROWS)
+        
+        # Store full cell width for scroll calculations
+        self._full_cell_width = cell_w
+        
+        # Build grid items first (needed to know which items go where)
+        # Only rebuild if dirty (grid size changed)
+        if self._grid_items_dirty:
+            self.grid_items = []
+            remaining_slots = self.MAX_TOTAL_SLOTS  # Always build max items
 
-        # Precompute grid positions
+            root_added = 0
+            platform_added = 0
 
-        avail_w = grid_w - 2 * self.GRID_OUTER_PADDING - (self.GRID_COLS - 1) * self.GRID_PADDING
-        avail_h = grid_h - 2 * self.GRID_OUTER_PADDING - (self.GRID_ROWS - 1) * self.GRID_PADDING
-        cell_w = avail_w // self.GRID_COLS
-        cell_h = avail_h // self.GRID_ROWS
+            # --- Add default folder first ---
+            default_folder = self.smart_folders.get("internal:default")
+            if default_folder:
+                self.grid_items.append(default_folder)
+                remaining_slots -= 1
+                root_added += 1
 
+            # --- Add favorites root folder ---
+            for key, data in self.smart_folders.items():
+                if key == "internal:default":
+                    continue
+                if remaining_slots <= 0 or root_added >= self.MAX_ROOT_SMART:
+                    break
+                if data.get("source") == "root" and key.lower().endswith("favorites"):
+                    self.grid_items.append(data)
+                    root_added += 1
+                    remaining_slots -= 1
+
+            # --- Add other root smart folders ---
+            for key, data in self.smart_folders.items():
+                if key == "internal:default":
+                    continue
+                if remaining_slots <= 0 or root_added >= self.MAX_ROOT_SMART:
+                    break
+                if data.get("source") == "root" and data not in self.grid_items:
+                    self.grid_items.append(data)
+                    root_added += 1
+                    remaining_slots -= 1
+
+            # --- Add platform smart folders ---
+            for key, data in self.smart_folders.items():
+                if remaining_slots <= 0 or platform_added >= self.MAX_PLATFORM_SMART:
+                    break
+                if data.get("source") == "by_platform":
+                    self.grid_items.append(data)
+                    platform_added += 1
+                    remaining_slots -= 1
+
+            # --- Fill remaining slots with icon overlays ---
+            for overlay_data in self.icon_overlays.values():
+                if remaining_slots <= 0:
+                    break
+                game_data = overlay_data.get("game_data")
+                self.grid_items.append({
+                    "icon": overlay_data["overlay"],
+                    "game_data": game_data,
+                    "hero": None,
+                    "logo": None,
+                })
+                remaining_slots -= 1
+
+            # --- Fill leftover slots with empty.png if user allows ---
+            if getattr(self, "show_empty_slots", True) and remaining_slots > 0:
+                empty_path = ASSETS_DIR / "empty.png"
+                if empty_path.exists():
+                    empty_grid_image = self._load_cached_rgba(empty_path)
+                else:
+                    # fallback: transparent placeholder so program doesn't crash
+                    empty_grid_image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+
+                # Fill remaining slots
+                while remaining_slots > 0:
+                    self.grid_items.append({
+                        "icon": empty_grid_image,
+                        "hero": None,
+                        "hero_frames": None,
+                        "hero_index": 0,
+                        "hero_duration": 100,
+                        "logo": None,
+                        "logo_frames": None,
+                        "logo_index": 0,
+                        "logo_duration": 100,
+                        "source": "empty",
+                        "platform": None,
+                    })
+                    remaining_slots -= 1
+            
+            self._grid_items_dirty = False
+            
+            # Clamp selection to available items after rebuild
+            if self.grid_items:
+                self.selected_index = max(0, min(self.selected_index, len(self.grid_items) - 1))
+        
+        # Now calculate grid positions for ALL items (never use 0,0,0,0)
         self.grid_positions = []       # visual squares
         self.grid_click_regions = []   # full rectangles
 
-        for idx in range(total_slots):
-            row = idx // self.GRID_COLS
-            col = idx % self.GRID_COLS
+        # Use current zoom level rows for layout (items expand right, not down)
+        current_rows = self.GRID_ROWS
+        scroll_offset = round(self.grid_scroll_x)
 
-            rect_x = grid_x + self.GRID_OUTER_PADDING + col * (cell_w + self.GRID_PADDING)
+        for idx in range(len(self.grid_items)):
+            # Column-major order: fill top-to-bottom, then move right
+            col = idx // current_rows
+            row = idx % current_rows
+
+            # Apply scroll offset for extended grid (round to int for rendering)
+            rect_x = grid_x + self.GRID_OUTER_PADDING + col * (cell_w + self.GRID_PADDING) - scroll_offset
             rect_y = grid_y + self.GRID_OUTER_PADDING + row * (cell_h + self.GRID_PADDING)
 
             # Store full rectangle for clicking
@@ -1144,131 +2738,54 @@ class Renderer:
             square_x = cx - size // 2
             square_y = cy - size // 2
 
-            self.grid_positions.append((square_x, square_y, size, size))
-
-        # Build grid items with strict order, no None filling
-        total_slots = self.GRID_ROWS * self.GRID_COLS
-        self.grid_items = []
-        remaining_slots = total_slots
-
-        root_added = 0
-        platform_added = 0
-
-        # --- Add default folder first ---
-        default_folder = self.smart_folders.get("internal:default")
-        if default_folder:
-            self.grid_items.append(default_folder)
-            remaining_slots -= 1
-            root_added += 1
-
-        # --- Add favorites root folder ---
-        for key, data in self.smart_folders.items():
-            if key == "internal:default":
-                continue
-            if remaining_slots <= 0 or root_added >= self.MAX_ROOT_SMART:
-                break
-            if data.get("source") == "root" and key.lower().endswith("favorites"):
-                self.grid_items.append(data)
-                root_added += 1
-                remaining_slots -= 1
-
-        # --- Add other root smart folders ---
-        for key, data in self.smart_folders.items():
-            if key == "internal:default":
-                continue
-            if remaining_slots <= 0 or root_added >= self.MAX_ROOT_SMART:
-                break
-            if data.get("source") == "root" and data not in self.grid_items:
-                self.grid_items.append(data)
-                root_added += 1
-                remaining_slots -= 1
-
-        # --- Add platform smart folders ---
-        for key, data in self.smart_folders.items():
-            if remaining_slots <= 0 or platform_added >= self.MAX_PLATFORM_SMART:
-                break
-            if data.get("source") == "by_platform":
-                self.grid_items.append(data)
-                platform_added += 1
-                remaining_slots -= 1
-
-        # --- Fill remaining slots with icon overlays ---
-        for overlay_data in self.icon_overlays.values():
-            if remaining_slots <= 0:
-                break
-            self.grid_items.append({
-                "icon": overlay_data["overlay"],
-                "game_img": overlay_data["game_img"],
-                "hero": None,
-                "logo": None,
-            })
-            remaining_slots -= 1
-
-        # --- Fill leftover slots with empty.png if user allows ---
-        if getattr(self, "show_empty_slots", True) and remaining_slots > 0:
-            empty_path = ASSETS_DIR / "empty.png"
-            if empty_path.exists():
-                empty_grid_image = self._load_cached_rgba(empty_path)
+            # Interpolate from cached position during zoom
+            if self._zoom_anim_start is not None and idx in self._zoom_item_positions:
+                from_x, from_y, from_w, from_h = self._zoom_item_positions[idx]
+                # Calculate zoom progress
+                if self._zoom_anim_from and self._zoom_anim_to:
+                    from_rows, from_cols = self._zoom_anim_from
+                    progress = (self._current_grid_rows - from_rows) / (self.GRID_ROWS - from_rows) if self.GRID_ROWS != from_rows else 1.0
+                    # Interpolate position
+                    interp_x = round(from_x + (square_x - from_x) * progress)
+                    interp_y = round(from_y + (square_y - from_y) * progress)
+                    interp_size = round(from_w + (size - from_w) * progress)
+                    self.grid_positions.append((interp_x, interp_y, interp_size, interp_size))
+                else:
+                    self.grid_positions.append((square_x, square_y, size, size))
             else:
-                # fallback: transparent placeholder so program doesn't crash
-                empty_grid_image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-
-            # Fill remaining slots
-            while remaining_slots > 0:
-                self.grid_items.append({
-                    "icon": empty_grid_image,
-                    "hero": None,
-                    "hero_frames": None,
-                    "hero_index": 0,
-                    "hero_duration": 100,
-                    "logo": None,
-                    "logo_frames": None,
-                    "logo_index": 0,
-                    "logo_duration": 100,
-                    "source": "empty",
-                    "platform": None,
-                })
-                remaining_slots -= 1
+                # For new items (not in cache), start from off-screen right during zoom out
+                if self._zoom_anim_start is not None and self._zoom_anim_from and self._zoom_anim_to:
+                    from_rows, from_cols = self._zoom_anim_from
+                    # If grid is getting larger (zooming out), new items come from right
+                    if self.GRID_ROWS > from_rows or self.GRID_COLS > from_cols:
+                        # Use animation time for progress (same as cell size animation)
+                        now = time.perf_counter()
+                        elapsed = now - self._zoom_anim_start
+                        t = min(elapsed / self._zoom_anim_duration, 1.0)
+                        # Smoothstep easing
+                        progress = t * t * (3 - 2 * t)
+                        # Start from off-screen right
+                        start_x = grid_x + grid_w + 50
+                        interp_x = round(start_x + (square_x - start_x) * progress)
+                        self.grid_positions.append((interp_x, square_y, size, size))
+                    else:
+                        self.grid_positions.append((square_x, square_y, size, size))
+                else:
+                    self.grid_positions.append((square_x, square_y, size, size))
         
-        # Precompute grid_positions
-        avail_w = grid_w - 2 * self.GRID_OUTER_PADDING - (self.GRID_COLS - 1) * self.GRID_PADDING
-        avail_h = grid_h - 2 * self.GRID_OUTER_PADDING - (self.GRID_ROWS - 1) * self.GRID_PADDING
-        cell_w = avail_w // self.GRID_COLS
-        cell_h = avail_h // self.GRID_ROWS
-
-        self.grid_positions = []
-        for idx in range(total_slots):
-            row = idx // self.GRID_COLS
-            col = idx % self.GRID_COLS
-            x = grid_x + self.GRID_OUTER_PADDING + col * (cell_w + self.GRID_PADDING)
-            y = grid_y + self.GRID_OUTER_PADDING + row * (cell_h + self.GRID_PADDING)
-            self.grid_positions.append((x, y, cell_w, cell_h))
-        
-        # ---- FORCE 1:1 SQUARES AFTER RECT LAYOUT ----
-        new_positions = []
-
-        for (x, y, w, h) in self.grid_positions:
-            size = min(w, h)
-
-            cx = x + w // 2
-            cy = y + h // 2
-
-            new_x = cx - size // 2
-            new_y = cy - size // 2
-
-            new_positions.append((new_x, new_y, size, size))
-
-        self.grid_positions = new_positions
-
-
         # -------------------------------------------------
         # COLUMN-BASED GRID SHIFT (Animated, smooth)
+        # Only apply when not scrolled beyond first visible columns
         # -------------------------------------------------
-        if self.ENABLE_COLUMN_SHIFT and self.GRID_COLS > 1:
+        if self.ENABLE_COLUMN_SHIFT and self.GRID_COLS > 1 and self.grid_scroll_x == 0:
 
             animated_index = self.selected_index
-            animated_col = animated_index % self.GRID_COLS
-            column_progress = animated_col / (self.GRID_COLS - 1)
+            # Column-major: col = idx // rows
+            animated_col = animated_index // self.GRID_ROWS
+            
+            # Only shift based on visible columns
+            visible_col = min(animated_col, self.GRID_COLS - 1)
+            column_progress = visible_col / (self.GRID_COLS - 1) if self.GRID_COLS > 1 else 0
 
             # Convert to -1 → +1 range (reversed direction)
             normalized = -((column_progress - 0.5) * 2)
@@ -1322,6 +2839,9 @@ class Renderer:
         top_screen_overlay = None
         
         # Selection animation (distance-aware slide)
+        if not self.grid_positions or self.selected_index >= len(self.grid_positions):
+            return base
+        
         target_x, target_y, target_w, target_h = self.grid_positions[self.selected_index]
         now = time.perf_counter()
 
@@ -1348,8 +2868,34 @@ class Renderer:
         else:
             target = (target_x, target_y, target_w, target_h)
 
-            # Start new animation when target changes
-            if self._sel_anim_to != target:
+            # During zoom or after zoom ended, use lerp to smoothly follow the grid
+            if self._zoom_anim_start is not None or self._zoom_ended_needs_snap:
+                lerp_speed = 0.4  # Smooth following
+                self._selected_anim_x = self._selected_anim_x + (target_x - self._selected_anim_x) * lerp_speed
+                self._selected_anim_y = self._selected_anim_y + (target_y - self._selected_anim_y) * lerp_speed
+                self._selected_anim_w = self._selected_anim_w + (target_w - self._selected_anim_w) * lerp_speed
+                self._selected_anim_h = self._selected_anim_h + (target_h - self._selected_anim_h) * lerp_speed
+                self._sel_anim_to = target
+                # Snap to exact position if very close
+                if (abs(self._selected_anim_x - target_x) < 0.5 and 
+                    abs(self._selected_anim_y - target_y) < 0.5):
+                    self._selected_anim_x = target_x
+                    self._selected_anim_y = target_y
+                    self._selected_anim_w = target_w
+                    self._selected_anim_h = target_h
+                    self._zoom_ended_needs_snap = False
+            # Snap to target if close enough
+            elif (abs(self._selected_anim_x - target_x) < 1 and 
+                  abs(self._selected_anim_y - target_y) < 1 and
+                  abs(self._selected_anim_w - target_w) < 1 and 
+                  abs(self._selected_anim_h - target_h) < 1):
+                self._selected_anim_x = target_x
+                self._selected_anim_y = target_y
+                self._selected_anim_w = target_w
+                self._selected_anim_h = target_h
+                self._sel_anim_to = target
+            # Normal selection animation
+            elif self._sel_anim_to != target:
                 self._sel_anim_from = (
                     self._selected_anim_x,
                     self._selected_anim_y,
@@ -1359,19 +2905,14 @@ class Renderer:
                 self._sel_anim_to = target
                 self._sel_anim_start = now
 
-                # -------------------------------
                 # Distance-aware duration
-                # -------------------------------
                 dx = target_x - self._sel_anim_from[0]
                 dy = target_y - self._sel_anim_from[1]
                 distance = (dx * dx + dy * dy) ** 0.5
-
                 cell_diag = (target_w * target_w + target_h * target_h) ** 0.5
-
                 base_duration = self.BASE_SEL_ANIM_DURATION
-                max_duration  = self.MAX_SEL_ANIM_DURATION
-
-                factor = max(1.0, distance / cell_diag)
+                max_duration = self.MAX_SEL_ANIM_DURATION
+                factor = max(1.0, distance / cell_diag) if cell_diag > 0 else 1.0
                 self._sel_anim_duration = min(max_duration, base_duration * factor)
 
             # Animate
@@ -1401,24 +2942,32 @@ class Renderer:
         if self.selected_img:
             paste(
                 self.selected_img,
-                round(self._selected_anim_x),
-                round(self._selected_anim_y),
-                round(self._selected_anim_w),
-                round(self._selected_anim_h),
+                round(self._selected_anim_x) if self._selected_anim_x is not None else 0,
+                round(self._selected_anim_y) if self._selected_anim_y is not None else 0,
+                round(self._selected_anim_w) if self._selected_anim_w is not None else 0,
+                round(self._selected_anim_h) if self._selected_anim_h is not None else 0,
             )
 
-        # Draw grid items ON TOP
+        # Draw grid items ON TOP (lazy rendering - only visible items)
+        grid_right = grid_x + grid_w
 
         for idx, item in enumerate(self.grid_items):
             if not item:
                 continue
+            
+            if idx >= len(self.grid_positions):
+                continue
 
             x, y, w, h = self.grid_positions[idx]
+            
+            # Skip if item is completely off-screen (lazy rendering)
+            if x + w < grid_x or x > grid_right:
+                continue
 
             # Determine what type of item this is
             is_default_folder = item.get("is_default_folder")
             is_smart_folder = item.get("source") in ("root", "by_platform")
-            is_icon_overlay = item.get("game_img") is not None
+            is_icon_overlay = item.get("game_data") is not None
 
             # Choose scale
             if is_default_folder:
@@ -1438,8 +2987,9 @@ class Renderer:
             content_y = y + (h - content_h) // 2
 
             # Draw game image first (if exists)
-            if item.get("game_img"):
-                paste(item["game_img"], content_x, content_y, content_w, content_h)
+            game_data = item.get("game_data")
+            if game_data:
+                paste(game_data["img"], content_x, content_y, content_w, content_h)
 
             # Draw icon on top
             if item.get("icon"):
@@ -1448,22 +2998,50 @@ class Renderer:
             if idx == self.selected_index:
                 top_screen_overlay = item
                 
-        # Top screen hero/logo
-        if top_screen_overlay:
-            top_x = device_x + round(self.TOP_SCREEN_X * scale)
-            top_y = device_y + round(self.TOP_SCREEN_Y * scale)
-            top_w = round(self.TOP_SCREEN_W * scale)
-            top_h = round(self.TOP_SCREEN_H * scale)
+        # Top screen hero/logo (only in dual screen mode - single screen is handled at end)
+        if top_screen_overlay and main_screen.w > 0 and main_screen.h > 0 and self.screen_manager.screen_mode == "dual":
+            top_x = device_x + round(main_screen.x * scale)
+            top_y = device_y + round(main_screen.y * scale)
+            top_w = round(main_screen.w * scale)
+            top_h = round(main_screen.h * scale)
 
-            # Hero still stretches normally
+            # Hero - fit to height, center horizontally, can be cut off on sides
             if top_screen_overlay.get("hero"):
-                paste(top_screen_overlay["hero"], top_x, top_y, top_w, top_h)
+                hero = top_screen_overlay["hero"]
+                hero_w, hero_h = hero.size
+                
+                # Scale to fit height
+                scale_hero = top_h / hero_h
+                new_w = int(hero_w * scale_hero)
+                new_h = top_h
+                
+                # Center horizontally (can go off screen if too wide)
+                hero_x = top_x + (top_w - new_w) // 2
+                hero_y = top_y
+                
+                # Resize hero
+                key = (id(hero), new_w, new_h)
+                hero_resized = self._resize_cache.get(key)
+                if hero_resized is None:
+                    hero_resized = hero.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                    self._resize_cache[key] = hero_resized
+                
+                # Clip hero to screen bounds
+                mask = Image.new("L", (new_w, new_h), 0)
+                draw = ImageDraw.Draw(mask)
+                clip_x1 = max(0, top_x - hero_x)
+                clip_y1 = max(0, top_y - hero_y)
+                clip_x2 = min(new_w, top_x + top_w - hero_x)
+                clip_y2 = min(new_h, top_y + top_h - hero_y)
+                draw.rectangle([clip_x1, clip_y1, clip_x2, clip_y2], fill=255)
+                masked_hero = Image.composite(hero_resized, Image.new("RGBA", (new_w, new_h), 0), mask)
+                base.alpha_composite(masked_hero, (hero_x, hero_y))
 
             # Logo
             if top_screen_overlay.get("logo"):
                 logo = top_screen_overlay["logo"]
 
-                # Preserve aspect ratio for default folder
+                # Preserve aspect ratio for default folder (fixed scale)
                 if top_screen_overlay.get("is_default_folder"):
                     logo_w, logo_h = logo.size
 
@@ -1475,22 +3053,30 @@ class Renderer:
                     key = (id(logo), new_w, new_h)
                     resized = self._resize_cache.get(key)
                     if resized is None:
-                        resized = logo.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                        resized = logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
                         self._resize_cache[key] = resized
 
                     paste_x = top_x + (top_w - new_w) // 2
                     paste_y = top_y + (top_h - new_h) // 2 - int(top_h * 0.1025)
 
-                    base.alpha_composite(resized, (paste_x, paste_y))
-                    
-
+                    # Mask to top screen bounds
+                    mask = Image.new("L", (new_w, new_h), 0)
+                    draw = ImageDraw.Draw(mask)
+                    clip_x1 = max(0, top_x - paste_x)
+                    clip_y1 = max(0, top_y - paste_y)
+                    clip_x2 = min(new_w, top_x + top_w - paste_x)
+                    clip_y2 = min(new_h, top_y + top_h - paste_y)
+                    if clip_x2 > clip_x1 and clip_y2 > clip_y1:
+                        draw.rectangle([clip_x1, clip_y1, clip_x2, clip_y2], fill=255)
+                        masked_logo = Image.composite(resized, Image.new("RGBA", (new_w, new_h), 0), mask)
+                        base.alpha_composite(masked_logo, (paste_x, paste_y))
+                    else:
+                        base.alpha_composite(resized, (paste_x, paste_y))
                 else:
-                    # Normal behavior for other folders
-                    # paste(logo, top_x, top_y, top_w, top_h)
-                    
+                    # Other folders use configurable scale
                     logo_w, logo_h = logo.size
 
-                    scale_fit = min(top_w / logo_w, top_h / logo_h) * 0.56
+                    scale_fit = min(top_w / logo_w, top_h / logo_h) * self.top_screen_icon_scale
 
                     new_w = int(logo_w * scale_fit)
                     new_h = int(logo_h * scale_fit)
@@ -1498,19 +3084,247 @@ class Renderer:
                     key = (id(logo), new_w, new_h)
                     resized = self._resize_cache.get(key)
                     if resized is None:
-                        resized = logo.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                        resized = logo.resize((new_w, new_h), Image.Resampling.LANCZOS)
                         self._resize_cache[key] = resized
 
                     paste_x = top_x + (top_w - new_w) // 2
                     paste_y = top_y + (top_h - new_h) // 2
 
-                    base.alpha_composite(resized, (paste_x, paste_y))
+                    # Mask to top screen bounds
+                    mask = Image.new("L", (new_w, new_h), 0)
+                    draw = ImageDraw.Draw(mask)
+                    clip_x1 = max(0, top_x - paste_x)
+                    clip_y1 = max(0, top_y - paste_y)
+                    clip_x2 = min(new_w, top_x + top_w - paste_x)
+                    clip_y2 = min(new_h, top_y + top_h - paste_y)
+                    if clip_x2 > clip_x1 and clip_y2 > clip_y1:
+                        draw.rectangle([clip_x1, clip_y1, clip_x2, clip_y2], fill=255)
+                        masked_logo = Image.composite(resized, Image.new("RGBA", (new_w, new_h), 0), mask)
+                        base.alpha_composite(masked_logo, (paste_x, paste_y))
+                    else:
+                        base.alpha_composite(resized, (paste_x, paste_y))
                 
-        # UI
-        if self.ui_visible and self.ui_img:
-            paste(self.ui_img, device_x, device_y, device_w, device_h)
-
-        # Frame
-        paste(self.frame_img, device_x, device_y, device_w, device_h)
+        # Render main screen on top in single screen STACKED mode only (so it can slide over grid)
+        # In single screen dual mode (stacked=False), top screen is off-screen and shouldn't render
+        if (self.screen_manager.screen_mode == "single" and 
+            self._single_screen_stacked and 
+            main_screen.w > 0 and main_screen.h > 0):
+            main_x = device_x + round(main_screen.x * scale)
+            main_y = device_y + round(main_screen.y * scale)
+            main_w = round(main_screen.w * scale)
+            main_h = round(main_screen.h * scale)
             
+            ext_x = device_x + round(external_screen.x * scale)
+            ext_y = device_y + round(external_screen.y * scale)
+            ext_w = round(external_screen.w * scale)
+            ext_h = round(external_screen.h * scale)
+            
+            main_wallpaper = main_screen.get_current_wallpaper()
+            if main_wallpaper and self.ss_mask:
+                # Resize ss_mask to main screen size
+                mask_key = (id(self.ss_mask), main_w, main_h)
+                screen_mask = self._resize_cache.get(mask_key)
+                if screen_mask is None:
+                    # Use LANCZOS for better quality with gradients
+                    screen_mask = self.ss_mask.resize((main_w, main_h), Image.Resampling.LANCZOS)
+                    # Extract alpha channel as mask (preserves gradient transparency)
+                    if screen_mask.mode == "RGBA":
+                        screen_mask = screen_mask.split()[3]  # Get alpha channel
+                    elif screen_mask.mode != "L":
+                        screen_mask = screen_mask.convert("L")
+                    self._resize_cache[mask_key] = screen_mask
+                
+                # Create bottom screen mask for clipping
+                bottom_mask = Image.new("L", (main_w, main_h), 0)
+                draw = ImageDraw.Draw(bottom_mask)
+                # Calculate overlap area with bottom screen
+                overlap_x1 = max(0, ext_x - main_x)
+                overlap_y1 = max(0, ext_y - main_y)
+                overlap_x2 = min(main_w, ext_x + ext_w - main_x)
+                overlap_y2 = min(main_h, ext_y + ext_h - main_y)
+                if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
+                    draw.rectangle([overlap_x1, overlap_y1, overlap_x2, overlap_y2], fill=255)
+                
+                # Combine masks using multiplication for smooth transitions
+                # ss_mask provides the shape with soft edges
+                # bottom_mask clips to the visible overlap area
+                combined_mask = ImageChops.multiply(screen_mask, bottom_mask)
+                
+                # Resize wallpaper to fit
+                wallpaper_resized = main_wallpaper.resize((main_w, main_h), Image.Resampling.BILINEAR)
+                # Apply combined mask
+                masked_wallpaper = Image.composite(wallpaper_resized, Image.new("RGBA", (main_w, main_h), 0), combined_mask)
+                base.alpha_composite(masked_wallpaper, (main_x, main_y))
+            
+            # Draw hero/logo on top of wallpaper in single screen mode
+            if top_screen_overlay and self.ss_mask:
+                # Calculate visible overlap area
+                visible_x1 = max(main_x, ext_x)
+                visible_y1 = max(main_y, ext_y)
+                visible_x2 = min(main_x + main_w, ext_x + ext_w)
+                visible_y2 = min(main_y + main_h, ext_y + ext_h)
+                
+                visible_w = visible_x2 - visible_x1
+                visible_h = visible_y2 - visible_y1
+                
+                if visible_w > 0 and visible_h > 0:
+                    # Hero - fit to visible WIDTH, center vertically within visible area
+                    if top_screen_overlay.get("hero"):
+                        hero = top_screen_overlay["hero"]
+                        hero_w, hero_h = hero.size
+                        
+                        # Scale to fit visible width
+                        scale_hero = visible_w / hero_w
+                        new_w = visible_w
+                        new_h = int(hero_h * scale_hero)
+                        
+                        # Only resize if dimensions are valid
+                        if new_w > 0 and new_h > 0:
+                            # Center vertically within visible area
+                            hero_x = visible_x1
+                            hero_y = visible_y1 + (visible_h - new_h) // 2
+                            
+                            key = (id(hero), new_w, new_h)
+                            hero_resized = self._resize_cache.get(key)
+                            if hero_resized is None:
+                                hero_resized = hero.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                                self._resize_cache[key] = hero_resized
+                            
+                            # Clip hero to visible screen bounds using combined mask
+                            mask = Image.new("L", (new_w, new_h), 0)
+                            draw = ImageDraw.Draw(mask)
+                            clip_x1 = max(0, visible_x1 - hero_x)
+                            clip_y1 = max(0, visible_y1 - hero_y)
+                            clip_x2 = min(new_w, visible_x1 + visible_w - hero_x)
+                            clip_y2 = min(new_h, visible_y1 + visible_h - hero_y)
+                            draw.rectangle([clip_x1, clip_y1, clip_x2, clip_y2], fill=255)
+                            masked_hero = Image.composite(hero_resized, Image.new("RGBA", (new_w, new_h), 0), mask)
+                            base.alpha_composite(masked_hero, (hero_x, hero_y))
+                    
+                    # Logo
+                    if top_screen_overlay.get("logo"):
+                        logo = top_screen_overlay["logo"]
+                        
+                        if top_screen_overlay.get("is_default_folder"):
+                            # Default folder - fixed scale relative to visible area
+                            logo_w, logo_h = logo.size
+                            scale_fit = min(visible_w / logo_w, visible_h / logo_h) * 0.56
+                            new_w = int(logo_w * scale_fit)
+                            new_h = int(logo_h * scale_fit)
+                            
+                            # Only resize if dimensions are valid
+                            if new_w > 0 and new_h > 0:
+                                key = (id(logo), new_w, new_h)
+                                resized = self._resize_cache.get(key)
+                                if resized is None:
+                                    resized = logo.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                                    self._resize_cache[key] = resized
+                                
+                                # Center within visible area
+                                paste_x = visible_x1 + (visible_w - new_w) // 2
+                                paste_y = visible_y1 + (visible_h - new_h) // 2 - int(visible_h * 0.1025)
+                                
+                                base.alpha_composite(resized, (paste_x, paste_y))
+                        else:
+                            # Other folders - configurable scale relative to visible area
+                            logo_w, logo_h = logo.size
+                            scale_fit = min(visible_w / logo_w, visible_h / logo_h) * self.top_screen_icon_scale
+                            new_w = int(logo_w * scale_fit)
+                            new_h = int(logo_h * scale_fit)
+                            
+                            # Only resize if dimensions are valid
+                            if new_w > 0 and new_h > 0:
+                                key = (id(logo), new_w, new_h)
+                                resized = self._resize_cache.get(key)
+                                if resized is None:
+                                    resized = logo.resize((new_w, new_h), Image.Resampling.BILINEAR)
+                                    self._resize_cache[key] = resized
+                                
+                                # Center within visible area
+                                paste_x = visible_x1 + (visible_w - new_w) // 2
+                                paste_y = visible_y1 + (visible_h - new_h) // 2
+                                
+                                base.alpha_composite(resized, (paste_x, paste_y))
+                                
+        # UI Elements - render based on screen mode
+        self._render_ui_elements(base, canvas_w, canvas_h, device_x, device_y, scale)
+
+        # Frame - skip if hidden, or make semi-transparent if debug or bezel edit mode
+        if not self.frame_hidden:
+            if (self.debug_drag_mode or self.bezel_edit_mode) and self.bezel_img:
+                # Create semi-transparent version
+                frame_copy = self.bezel_img.copy()
+                alpha = frame_copy.split()[3]
+                alpha_adjusted = alpha.point(lambda p: int(p * 0.5))
+                frame_copy.putalpha(alpha_adjusted)
+                paste(frame_copy, device_x, device_y, device_w, device_h)
+            else:
+                paste(self.bezel_img, device_x, device_y, device_w, device_h)
+        
+        # App Grid Controls - now handled by tkinter widgets in app.py
+        # Only show controls when in bezel edit mode
+        # if self.bezel_edit_mode:
+        #     self._render_app_grid_controls(base, canvas_w, canvas_h)
+        
+        # Draw handles on top of everything (in bezel edit mode)
+        if self.bezel_edit_mode:
+            # Recalculate screen positions for handles at the end
+            main_rect = (
+                device_x + round(main_screen.x * scale),
+                device_y + round(main_screen.y * scale),
+                round(main_screen.w * scale),
+                round(main_screen.h * scale)
+            )
+            ext_rect = (
+                device_x + round(external_screen.x * scale),
+                device_y + round(external_screen.y * scale),
+                round(external_screen.w * scale),
+                round(external_screen.h * scale)
+            )
+            
+            # Draw screen borders on top of everything
+            if self.screen_manager.screen_mode == "dual":
+                self._draw_border(base, main_rect, (255, 165, 0, 255), 3)
+            
+            self._draw_border(base, ext_rect, (50, 205, 50, 255), 3)
+            
+            # Draw app grid handles (red) - but not in magnify window area
+            if hasattr(self, '_app_grid_debug') and self._app_grid_debug:
+                grid_left = self._app_grid_debug.get('grid_left')
+                grid_right = self._app_grid_debug.get('grid_right')
+                grid_top = self._app_grid_debug.get('grid_top')
+                grid_bottom = self._app_grid_debug.get('grid_bottom')
+                if grid_left is not None:
+                    # Check if app grid area overlaps with magnify window (bottom-right corner)
+                    mag_size = self.magnify_size
+                    mag_margin = 20
+                    mag_x = canvas_w - mag_size - mag_margin
+                    mag_y = canvas_h - mag_size - mag_margin
+                    # Only draw handles if they're outside the magnify window
+                    if not (grid_left < mag_x + mag_size and grid_right > mag_x and 
+                            grid_top < mag_y + mag_size and grid_bottom > mag_y):
+                        self._render_drag_handles(base, grid_left, grid_right, grid_top, grid_bottom)
+            
+            # Draw main screen handles (orange) in dual mode
+            if self.screen_manager.screen_mode == "dual":
+                mx, my, mw, mh = main_rect
+                if mw > 0 and mh > 0:
+                    for hx in [mx, mx + mw]:
+                        for hy in [my, my + mh]:
+                            self._draw_handle(base, hx, hy, (255, 165, 0, 255), 6)
+                    self._draw_handle(base, mx + mw//2, my, (255, 165, 0, 255), 6)
+                    self._draw_handle(base, mx + mw//2, my + mh, (255, 165, 0, 255), 6)
+                    self._draw_handle(base, mx, my + mh//2, (255, 165, 0, 255), 6)
+                    self._draw_handle(base, mx + mw, my + mh//2, (255, 165, 0, 255), 6)
+            
+            # Draw external screen handles (lime green)
+            ex, ey, ew, eh = ext_rect
+            for hx in [ex, ex + ew]:
+                for hy in [ey, ey + eh]:
+                    self._draw_handle(base, hx, hy, (50, 205, 50, 255), 6)
+            self._draw_handle(base, ex + ew//2, ey, (50, 205, 50, 255), 6)
+            self._draw_handle(base, ex + ew//2, ey + eh, (50, 205, 50, 255), 6)
+            self._draw_handle(base, ex, ey + eh//2, (50, 205, 50, 255), 6)
+            self._draw_handle(base, ex + ew, ey + eh//2, (50, 205, 50, 255), 6)
+        
         return base
