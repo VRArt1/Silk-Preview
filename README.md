@@ -52,8 +52,8 @@ The intent of this project is to be an accurate theme previewer for the use of g
 
 | Key | Control |
 | --- | --- |
-| Tab | Frame Cycle |
-| Shift Tab | Reverse Frame Cycle |
+| Tab | Bezel Cycle |
+| Shift Tab | Reverse Bezel Cycle |
 | L | Load Theme |
 | R | Refresh |
 | S | Screenshot |
