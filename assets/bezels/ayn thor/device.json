@@ -1,24 +1,32 @@
 {
-  "display_name": "AYN Thor",
-  "screen_amount": 2,
-  "screens": {
-    "main": {
-      "x_pct": 0.0501,
-      "y_pct": 0.0249,
-      "w_pct": 0.8998,
-      "h_pct": 0.4257
+    "display_name": "AYN Thor",
+    "screen_amount": 2,
+    "screens": {
+        "main": {
+            "x": 44,
+            "y": 26,
+            "w": 790,
+            "h": 444,
+            "x_pct": 0.0501,
+            "y_pct": 0.0249,
+            "w_pct": 0.8998,
+            "h_pct": 0.4257
+        },
+        "external": {
+            "x": 219,
+            "y": 590,
+            "w": 441,
+            "h": 377,
+            "x_pct": 0.2494,
+            "y_pct": 0.5657,
+            "w_pct": 0.5023,
+            "h_pct": 0.3615
+        }
     },
-    "external": {
-      "x_pct": 0.2494,
-      "y_pct": 0.5657,
-      "w_pct": 0.5023,
-      "h_pct": 0.3615
+    "app_grid": {
+        "y_offset": 3,
+        "width": 250,
+        "height": 30,
+        "icon_scale": 1.0
     }
-  },
-  "app_grid": {
-    "y_offset_pct": 0.0029,
-    "width_pct": 0.2847,
-    "height_pct": 0.0288,
-    "icon_scale": 1.0
-  }
 }

@@ -40,8 +40,11 @@ class App(TkinterDnD.Tk):
         self.settings_path = Path(__file__).parent / "settings.ini"
         self.config.read(self.settings_path)
 
+        # Ensure sections exist
         if "Settings" not in self.config:
             self.config["Settings"] = {}
+        if "Misc" not in self.config:
+            self.config["Misc"] = {}
 
         # ----------------------------
         # Zoom levels (rows, cols) - per screen mode
@@ -67,17 +70,77 @@ class App(TkinterDnD.Tk):
             (1, 9),  # largest
         ]
         
-        # Stacked mode offset percentages (how much of top screen is visible)
-        # Based on measurements: 597px image height, visible top screen at each zoom level
-        # 3 rows: 239px (40.0%), 2 rows: 292px (48.9%), 1 row: 372px (62.3%)
-        self.stacked_offset_percentages = {
-            3: 0.400,   # 3 rows → 40.0% visible
-            2: 0.489,   # 2 rows → 48.9% visible
-            1: 0.623,   # 1 row → 62.3% visible
+        # Combined lookup table for single screen stacked mode
+        # offset_pct: how much of top screen is visible (for positioning top screen)
+        # scale_factor: portion of full grid area to use for item grid
+        self.stacked_lookup = {
+            3: {"offset_pct": 0.399, "scale_factor": 0.588},   # 3 rows
+            2: {"offset_pct": 0.492, "scale_factor": 0.481},   # 2 rows
+            1: {"offset_pct": 0.621, "scale_factor": 0.348},   # 1 row
         }
         
-        # Single screen stacked mode (top screen visible above grid)
+        # Backwards compatibility - offset percentages only (for top screen positioning)
+        self.stacked_offset_percentages = {rows: v["offset_pct"] for rows, v in self.stacked_lookup.items()}
+        
+        # Load Settings in order (for correct defaults when saving)
+        # default_folder_color
+        if "default_folder_color" not in self.config["Settings"]:
+            self.config["Settings"]["default_folder_color"] = "blue"
+        self.default_folder_color = self.config.get("Settings", "default_folder_color", fallback="blue")
+        self.default_folder_color_var = tk.StringVar(value=self.default_folder_color)
+        
+        # dock_background
+        if "dock_background" not in self.config["Settings"]:
+            self.config["Settings"]["dock_background"] = "True"
+        
+        # logo_size
+        if "logo_size" not in self.config["Settings"]:
+            self.config["Settings"]["logo_size"] = "60"
+        self.logo_size = self.config.getint("Settings", "logo_size", fallback=60)
+        
+        # show_corner_hints
+        if "show_corner_hints" not in self.config["Settings"]:
+            self.config["Settings"]["show_corner_hints"] = "True"
+        
+        # single_screen_mode
+        if "single_screen_mode" not in self.config["Settings"]:
+            self.config["Settings"]["single_screen_mode"] = "True"
         self.single_screen_stacked_mode = self.config.getboolean("Settings", "single_screen_mode", fallback=True)
+        
+        # apps
+        if "apps" not in self.config["Settings"]:
+            self.config["Settings"]["apps"] = "True"
+        self.apps_visible = self.config.getboolean("Settings", "apps", fallback=True)
+        
+        # empty_apps
+        if "empty_apps" not in self.config["Settings"]:
+            self.config["Settings"]["empty_apps"] = "True"
+        self.empty_apps_visible = self.config.getboolean("Settings", "empty_apps", fallback=True)
+        
+        # empty_slots
+        if "empty_slots" not in self.config["Settings"]:
+            self.config["Settings"]["empty_slots"] = "True"
+        self.empty_slots = self.config.getboolean("Settings", "empty_slots", fallback=True)
+        
+        # remember_last_theme
+        if "remember_last_theme" not in self.config["Settings"]:
+            self.config["Settings"]["remember_last_theme"] = "True"
+        self.remember_last_theme = self.config.getboolean("Settings", "remember_last_theme", fallback=True)
+        
+        # last_theme_path
+        if "last_theme_path" not in self.config["Settings"]:
+            self.config["Settings"]["last_theme_path"] = ""
+        self.last_theme_path = self.config.get("Settings", "last_theme_path", fallback=None)
+        
+        # bg_scroll_speed
+        if "bg_scroll_speed" not in self.config["Settings"]:
+            self.config["Settings"]["bg_scroll_speed"] = "1"
+        self.bg_scroll_speed = self.config.getint("Settings", "bg_scroll_speed", fallback=1)
+        
+        # reverse_direction
+        if "reverse_direction" not in self.config["Settings"]:
+            self.config["Settings"]["reverse_direction"] = "False"
+        self.reverse_direction = self.config.getboolean("Settings", "reverse_direction", fallback=False)
         
         # Calculate max values from zoom levels
         self.max_rows_dual = max(r for r, c in self.zoom_levels_dual)
@@ -89,10 +152,15 @@ class App(TkinterDnD.Tk):
         
         # Use appropriate zoom levels based on screen mode (default to dual)
         self.zoom_levels = self.zoom_levels_dual
-        self.zoom_index = self.config.getint("Settings", "zoom_index", fallback=1)
+        self.zoom_index = self.config.getint("Misc", "zoom_index", fallback=1)
         # Clamp zoom_index to valid range for default mode
         if self.zoom_index >= len(self.zoom_levels):
             self.zoom_index = len(self.zoom_levels) - 1
+        
+        # Canvas zoom level (for zooming the device on canvas)
+        if "canvas_zoom" not in self.config["Misc"]:
+            self.config["Misc"]["canvas_zoom"] = "1.0"
+        self.canvas_zoom = self.config.getfloat("Misc", "canvas_zoom", fallback=1.0)
 
         # Maximum number of grid slots across all zoom levels
         self.max_grid_slots_dual = self.max_rows_dual * self.max_cols_dual
@@ -105,27 +173,6 @@ class App(TkinterDnD.Tk):
         # Total columns for extended grid navigation (use max of all modes)
         self.total_cols = max(self.max_cols_dual, self.max_cols_single_dual, self.max_cols_single_stacked)
 
-        # Load empty_slots setting early (needed before renderer init)
-        if "empty_slots" not in self.config["Settings"]:
-            self.config["Settings"]["empty_slots"] = "True"
-        self.empty_slots = self.config.getboolean("Settings", "empty_slots", fallback=True)
-
-        # Load apps settings
-        if "apps" not in self.config["Settings"]:
-            self.config["Settings"]["apps"] = "True"
-        self.apps_visible = self.config.getboolean("Settings", "apps", fallback=True)
-        
-        if "empty_apps" not in self.config["Settings"]:
-            self.config["Settings"]["empty_apps"] = "True"
-        self.empty_apps_visible = self.config.getboolean("Settings", "empty_apps", fallback=True)
-
-        # Load remember_last_theme setting
-        self.remember_last_theme = self.config.getboolean("Settings", "remember_last_theme", fallback=True)
-        self.last_theme_path = self.config.get("Settings", "last_theme_path", fallback=None)
-        
-        # Load logo_size (default 60%)
-        self.logo_size = self.config.getint("Settings", "logo_size", fallback=60)
-        
         # App grid settings are now loaded from device.json in each bezel folder
         # These are just initial defaults that will be overwritten by device settings
         self.app_grid_x_offset = 0
@@ -134,12 +181,13 @@ class App(TkinterDnD.Tk):
         self.app_grid_icon_size = 50
         self.app_grid_icon_scale = 1.0
         
-        # Load default folder color from settings, fallback to "blue"
-        self.default_folder_color = self.config.get("Settings", "default_folder_color", fallback="blue")
-        self.default_folder_color_var = tk.StringVar(value=self.default_folder_color)
-        
         # Magnify window size
-        self.magnify_size = self.config.getint("Settings", "magnify_size", fallback=200)
+        self.magnify_size = self.config.getint("Misc", "magnify_size", fallback=200)
+        
+        # Magnify window toggle
+        if "magnify_window" not in self.config["Misc"]:
+            self.config["Misc"]["magnify_window"] = "True"
+        self.magnify_window = self.config.getboolean("Misc", "magnify_window", fallback=True)
         
         # ----------------------------
         # Renderer
@@ -155,6 +203,7 @@ class App(TkinterDnD.Tk):
         # Assign the value so Renderer knows
         self.renderer.show_empty_slots = self.empty_slots
         self.renderer._single_screen_stacked = self.single_screen_stacked_mode
+        self.renderer._stacked_lookup = self.stacked_lookup
         self.renderer.app_grid_visible = self.empty_apps_visible
         self.renderer.populated_apps_visible = self.apps_visible
         self.renderer.app_grid_x_offset = self.app_grid_x_offset
@@ -164,6 +213,7 @@ class App(TkinterDnD.Tk):
         self.renderer.app_grid_icon_scale = self.app_grid_icon_scale
         self.renderer.default_folder_color = self.default_folder_color
         self.renderer.magnify_size = self.magnify_size
+        self.renderer.magnify_window = self.magnify_window
         self.renderer.top_screen_icon_scale = self.logo_size / 100.0
         
         # Set initial top screen offset based on stacked mode setting
@@ -204,6 +254,22 @@ class App(TkinterDnD.Tk):
         # Canvas
         self.canvas = tk.Canvas(self.main_frame, bg="#202020", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
+        
+        # Canvas Zoom buttons frame (separate from canvas so they aren't affected by zoom)
+        self.canvas_zoom_frame = tk.Frame(self.main_frame, bg="#2a2a2a")
+        self.canvas_zoom_frame.grid(row=0, column=0, sticky="sw", padx=10, pady=10)
+        
+        self.canvas_zoom_in_btn = tk.Button(
+            self.canvas_zoom_frame, text="+", width=3, height=1, font=("Arial", 10, "bold"),
+            command=self.canvas_zoom_in, bg="#3a3a3a", fg="white", relief="flat"
+        )
+        self.canvas_zoom_in_btn.pack(side="top", pady=(0, 2))
+        
+        self.canvas_zoom_out_btn = tk.Button(
+            self.canvas_zoom_frame, text="−", width=3, height=1, font=("Arial", 10, "bold"),
+            command=self.canvas_zoom_out, bg="#3a3a3a", fg="white", relief="flat"
+        )
+        self.canvas_zoom_out_btn.pack(side="top")
         
         # Bezel Edit Overlay Frame (initially hidden)
         self.bezel_edit_overlay = tk.Frame(self.canvas, bg="#2a2a2a", bd=2, relief="raised")
@@ -282,8 +348,8 @@ class App(TkinterDnD.Tk):
         # ----------------------------
         # Buttons
         # ----------------------------
-        ttk.Button(self.controls, text="Load", command=self.load_theme).pack(side="left", padx=4)
-        ttk.Button(self.controls, text="Refresh", command=self.refresh).pack(side="left", padx=4)
+        ttk.Button(self.controls, text="Load Theme", command=self.load_theme).pack(side="left", padx=4)
+        ttk.Button(self.controls, text="Refresh Theme", command=self.refresh).pack(side="left", padx=4)
         
         # ----------------------------
         # Screenshot button
@@ -308,6 +374,11 @@ class App(TkinterDnD.Tk):
         self.empty_slots_var = tk.BooleanVar(value=self.empty_slots)
         self.remember_var = tk.BooleanVar(value=self.remember_last_theme)
         self.bezel_edit_var = tk.BooleanVar(value=False)
+        
+        # Bezel edit drag state
+        self._dragging_handle = None
+        self._drag_start_pos = None
+        self._drag_start_values = None
         
         # ----------------------------
         # Settings button (right-aligned)
@@ -337,6 +408,7 @@ class App(TkinterDnD.Tk):
         self.canvas.bind("<Button-1>", self.on_canvas_left_click)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
         self.canvas.bind("<Motion>", self._on_canvas_motion)  # Track mouse position for magnify window
+        self.canvas.bind("<ButtonRelease-1>", self.on_canvas_left_release)
         
         self.bind("<Left>", lambda e: self.move_selection(-1, 0))
         self.bind("<Right>", lambda e: self.move_selection(1, 0))
@@ -360,6 +432,7 @@ class App(TkinterDnD.Tk):
         # Apply zoom and start loop
         # ----------------------------
         self._apply_zoom()
+        self._apply_canvas_zoom()
         self.update_idletasks()
         self.redraw()
         self._schedule_gif_redraw()
@@ -380,8 +453,7 @@ class App(TkinterDnD.Tk):
             size = (w, h)
             if getattr(self, "_last_canvas_size", None) != size:
                 self._last_canvas_size = size
-                if hasattr(self.renderer, "_static_cache_dirty"):
-                    self.renderer._static_cache_dirty = True
+                self.renderer._invalidate_static_cache()
                 # Reset zoom animation on resize so grid snaps to correct size
                 self.renderer._zoom_anim_start = None
                 self.renderer._zoom_anim_from = None
@@ -396,6 +468,10 @@ class App(TkinterDnD.Tk):
                 self.renderer._sel_anim_start = None
                 # Recalculate scroll position instantly (no animation) to account for changed cell sizes
                 self._update_grid_scroll(instant=True)
+                # Recalculate offset for new window size (if in stacked mode)
+                if self.single_screen_stacked_mode:
+                    rows = self.renderer.GRID_ROWS
+                    self._apply_stacked_offset(rows)
                 self.redraw()
 
     def cycle_bezel(self, event):
@@ -561,8 +637,41 @@ class App(TkinterDnD.Tk):
         
         # Force redraw to populate correct grid dimensions in renderer
         # (CRITICAL for proper spacing when switching bezels)
-        self.renderer._static_cache_dirty = True
+        # Cancel any existing bg scroll timer
+        if hasattr(self, '_bg_scroll_timer') and self._bg_scroll_timer:
+            self.after_cancel(self._bg_scroll_timer)
+            self._bg_scroll_timer = None
+        
+        # Force size change to trigger full redraw (same as resize does)
+        self._last_canvas_size = None
+        
+        # Invalidate cache and reset animations (same as resize does)
+        self.renderer._invalidate_static_cache()
+        self.renderer._zoom_anim_start = None
+        self.renderer._zoom_anim_from = None
+        self.renderer._zoom_anim_to = None
+        self.renderer._selected_anim_x = None
+        self.renderer._selected_anim_y = None
+        self.renderer._selected_anim_w = None
+        self.renderer._selected_anim_h = None
+        self.renderer._sel_anim_from = None
+        self.renderer._sel_anim_to = None
+        self.renderer._sel_anim_start = None
+        
+        # Recalculate scroll position instantly
+        self._update_grid_scroll(instant=True)
+        if self.single_screen_stacked_mode:
+            rows = self.renderer.GRID_ROWS
+            self._apply_stacked_offset(rows)
+        
+        # Reset bg scroll offset for fresh start
+        self._bg_scroll_offset = 0.0
+        
+        # Full redraw
         self.redraw()
+        
+        # Restart bg scroll animation
+        self._update_bg_scroll()
         
         # Save the bezel selection to settings
         self.save_settings()
@@ -596,6 +705,11 @@ class App(TkinterDnD.Tk):
         self.renderer.GRID_COLS = new_cols
         self.renderer._current_grid_rows = float(new_rows)
         self.renderer._current_grid_cols = float(new_cols)
+        
+        # Recalculate offset for new device's screen size (if in stacked mode)
+        # This ensures SINGLE_SCREEN_MAIN_OFFSET is correct for the new device
+        if self.single_screen_stacked_mode:
+            self._apply_stacked_offset(new_rows)
         
         # Mark caches for rebuild (CRITICAL for visual update)
         self.renderer._grid_items_dirty = True
@@ -631,7 +745,10 @@ class App(TkinterDnD.Tk):
     
     def take_screenshot(self, clean=False):
         """Take a screenshot of the device including surrounding padding and save as PNG."""
-
+        
+        # Invalidate cache to ensure fresh render
+        self.renderer._invalidate_static_cache()
+        
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
         if canvas_w <= 1 or canvas_h <= 1:
@@ -747,6 +864,14 @@ class App(TkinterDnD.Tk):
 
 
     def refresh(self):
+        # Refresh bezel list in case new ones were added/removed
+        self.renderer.discover_bezels()
+        self.bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
+        
+        # Update the dropdown with new options
+        if hasattr(self, 'bezel_dropdown'):
+            self.bezel_dropdown['values'] = self.bezel_options
+        
         # Also pass max_grid_slots when refreshing
         self.renderer.load_theme(self.renderer.theme_path, max_grid_items=self.max_grid_slots)
         self.preview_panel.refresh()
@@ -876,6 +1001,8 @@ class App(TkinterDnD.Tk):
         # Mark caches for rebuild (CRITICAL for visual update)
         self.renderer._static_cache_dirty = True
         self.renderer._resize_cache.clear()
+        # Also invalidate clean content cache for magnify window
+        self.renderer._cached_clean_content = None
         
         # Save and redraw
         self.save_settings()
@@ -1191,9 +1318,61 @@ class App(TkinterDnD.Tk):
         self.ext_h_entry.bind("<Return>", lambda e: self._on_screen_entry_change("external", "h"))
         self.advanced_entries.append(self.ext_h_entry)
         
-        # Center screens button
-        self.center_screens_btn = tk.Button(main_frame, text="Center Screens to Device", command=self._center_screens_to_device)
-        self.center_screens_btn.pack(pady=5)
+        # Center screens buttons - two rows
+        self.center_buttons_frame = tk.Frame(main_frame, bg="#3a3a3a")
+        self.center_buttons_frame.pack(pady=5)
+        
+        # Top screen center buttons row
+        self.top_center_frame = tk.Frame(self.center_buttons_frame, bg="#3a3a3a")
+        self.top_center_frame.pack(fill="x", pady=2)
+        
+        tk.Label(self.top_center_frame, text="Top:", bg="#3a3a3a", fg="orange", width=8, anchor="w").pack(side="left")
+        tk.Button(self.top_center_frame, text="Center ↔", width=10, command=lambda: self._center_screen_horizontal("main")).pack(side="left", padx=2)
+        tk.Button(self.top_center_frame, text="Center ↕", width=10, command=lambda: self._center_screen_vertical("main")).pack(side="left", padx=2)
+        
+        # Bottom screen center buttons row
+        self.bottom_center_frame = tk.Frame(self.center_buttons_frame, bg="#3a3a3a")
+        self.bottom_center_frame.pack(fill="x", pady=2)
+        
+        tk.Label(self.bottom_center_frame, text="Bottom:", bg="#3a3a3a", fg="lime", width=8, anchor="w").pack(side="left")
+        tk.Button(self.bottom_center_frame, text="Center ↔", width=10, command=lambda: self._center_screen_horizontal("external")).pack(side="left", padx=2)
+        tk.Button(self.bottom_center_frame, text="Center ↕", width=10, command=lambda: self._center_screen_vertical("external")).pack(side="left", padx=2)
+        
+        # Magnify controls at bottom
+        magnify_frame = tk.Frame(main_frame, bg="#3a3a3a", bd=1, relief="sunken")
+        magnify_frame.pack(fill="x", pady=5)
+        
+        self.magnify_window_var = tk.BooleanVar(value=getattr(self.renderer, 'magnify_window', True))
+        magnify_window_check = tk.Checkbutton(
+            magnify_frame,
+            text="Magnify Window",
+            variable=self.magnify_window_var,
+            command=self._on_magnify_window_change,
+            bg="#3a3a3a",
+            fg="white",
+            selectcolor="#3a3a3a",
+            activebackground="#3a3a3a"
+        )
+        magnify_window_check.pack(side="left", padx=5)
+        
+        tk.Label(magnify_frame, text="Size:", bg="#3a3a3a", fg="white").pack(side="left", padx=(10, 0))
+        self.magnify_size_var = tk.IntVar(value=getattr(self.renderer, 'magnify_size', 200))
+        magnify_size_slider = tk.Scale(
+            magnify_frame,
+            from_=100,
+            to=300,
+            orient="horizontal",
+            variable=self.magnify_size_var,
+            command=self._on_magnify_size_change,
+            bg="#3a3a3a",
+            fg="white",
+            highlightthickness=0,
+            length=150
+        )
+        magnify_size_slider.pack(side="left", fill="x", expand=True, padx=5)
+        
+        self.magnify_size_label = tk.Label(magnify_frame, text=f"{self.magnify_size_var.get()}", bg="#3a3a3a", fg="white")
+        self.magnify_size_label.pack(side="left", padx=5)
         
         # Store references for visibility toggling
         self.screen_frame = top_screen_frame
@@ -1233,6 +1412,32 @@ class App(TkinterDnD.Tk):
             if hasattr(self, 'bottom_screen_advanced'):
                 self.bottom_screen_advanced.pack_forget()
     
+    def _on_magnify_window_change(self):
+        self.magnify_window = self.magnify_window_var.get()
+        self.renderer.magnify_window = self.magnify_window
+        self.redraw()
+        
+        if "Misc" not in self.config:
+            self.config["Misc"] = {}
+        self.config["Misc"]["magnify_window"] = str(self.magnify_window)
+    
+    def _on_magnify_size_change(self, value):
+        size = int(float(value))
+        size = round(size / 10) * 10
+        size = max(100, min(300, size))
+        self.magnify_size_var.set(size)
+        self.renderer.magnify_size = size
+        self.renderer.magnify_zoom = 2.0 * (size / 150)
+        self.magnify_size_label.config(text=f"{size}")
+        
+        if "Misc" not in self.config:
+            self.config["Misc"] = {}
+        self.config["Misc"]["magnify_size"] = str(size)
+        with open(self.settings_path, "w") as f:
+            self.config.write(f)
+        
+        self.redraw()
+    
     def _center_screens_to_device(self):
         """Center both screens to the device image"""
         from screen import Screen
@@ -1266,6 +1471,64 @@ class App(TkinterDnD.Tk):
             bot_y = (frame_h - bot_h) // 2
             
             self.renderer.set_temp_screen_pos("external", bot_x, bot_y, bot_w, bot_h)
+        
+        self._update_entry_fields()
+        self.redraw()
+    
+    def _center_screen_horizontal(self, screen_name: str):
+        """Center a screen horizontally within the device"""
+        from screen import Screen
+        
+        frame_w = Screen.FRAME_WIDTH
+        frame_h = Screen.FRAME_HEIGHT
+        
+        if screen_name == "main":
+            # Top screen
+            cur_x = self.renderer.screen_manager.main.x
+            cur_y = self.renderer.screen_manager.main.y
+            cur_w = self.renderer.screen_manager.main.w
+            cur_h = self.renderer.screen_manager.main.h
+            new_x = (frame_w - cur_w) // 2
+            self.renderer.set_temp_screen_pos(screen_name, new_x, cur_y, cur_w, cur_h)
+        else:
+            # Bottom/external screen
+            cur_x = self.renderer.screen_manager.external.x
+            cur_y = self.renderer.screen_manager.external.y
+            cur_w = self.renderer.screen_manager.external.w
+            cur_h = self.renderer.screen_manager.external.h
+            new_x = (frame_w - cur_w) // 2
+            self.renderer.set_temp_screen_pos(screen_name, new_x, cur_y, cur_w, cur_h)
+        
+        self._update_entry_fields()
+        self.redraw()
+    
+    def _center_screen_vertical(self, screen_name: str):
+        """Center a screen vertically within the device"""
+        from screen import Screen
+        
+        frame_w = Screen.FRAME_WIDTH
+        frame_h = Screen.FRAME_HEIGHT
+        
+        if screen_name == "main":
+            # Top screen - center in upper half
+            cur_x = self.renderer.screen_manager.main.x
+            cur_y = self.renderer.screen_manager.main.y
+            cur_w = self.renderer.screen_manager.main.w
+            cur_h = self.renderer.screen_manager.main.h
+            new_y = (frame_h // 2 - cur_h) // 2
+            self.renderer.set_temp_screen_pos(screen_name, cur_x, new_y, cur_w, cur_h)
+        else:
+            # Bottom/external screen - center in lower half for dual, full height for single
+            amount = self.renderer._temp_screen_amount or 2
+            cur_x = self.renderer.screen_manager.external.x
+            cur_y = self.renderer.screen_manager.external.y
+            cur_w = self.renderer.screen_manager.external.w
+            cur_h = self.renderer.screen_manager.external.h
+            if amount == 2:
+                new_y = frame_h // 2 + (frame_h // 2 - cur_h) // 2
+            else:
+                new_y = (frame_h - cur_h) // 2
+            self.renderer.set_temp_screen_pos(screen_name, cur_x, new_y, cur_w, cur_h)
         
         self._update_entry_fields()
         self.redraw()
@@ -1390,6 +1653,8 @@ class App(TkinterDnD.Tk):
         current = self.renderer._temp_screen_amount or 2
         new_amount = 1 if current == 2 else 2
         self.renderer.set_temp_screen_amount(new_amount)
+        # Invalidate cache to ensure fresh render
+        self.renderer._invalidate_static_cache()
         self._update_bezel_edit_overlay()
         self.redraw()
     
@@ -1473,6 +1738,12 @@ class App(TkinterDnD.Tk):
                     self.screen_frame.pack_forget()
                     if hasattr(self, 'top_screen_advanced'):
                         self.top_screen_advanced.pack_forget()
+            # Show/hide top center buttons based on screen amount
+            if hasattr(self, 'top_center_frame'):
+                if amount == 2:
+                    self.top_center_frame.pack(fill="x", pady=2, before=self.bottom_center_frame)
+                else:
+                    self.top_center_frame.pack_forget()
             # Update entry fields with current values
             self._update_entry_fields()
         else:
@@ -1507,6 +1778,100 @@ class App(TkinterDnD.Tk):
         if self.zoom_index > 0:
             self.zoom_index -= 1
             self._apply_zoom()
+    
+    def canvas_zoom_in(self):
+        """Zoom in the device on the canvas (does not affect screenshots)."""
+        if self.canvas_zoom < 3.0:
+            self.canvas_zoom = min(3.0, self.canvas_zoom + 0.25)
+            self._apply_canvas_zoom()
+            self._save_canvas_zoom()
+    
+    def canvas_zoom_out(self):
+        """Zoom out the device on the canvas (does not affect screenshots)."""
+        if self.canvas_zoom > 0.25:
+            self.canvas_zoom = max(0.25, self.canvas_zoom - 0.25)
+            self._apply_canvas_zoom()
+            self._save_canvas_zoom()
+    
+    def _print_debug_info(self):
+        """Print debug info about grid and screen positions."""
+        print("You found me! :D")
+    
+    def _apply_canvas_zoom(self):
+        """Apply canvas zoom by triggering a redraw with scaled image."""
+        # Invalidate renderer cache to avoid stale background
+        self.renderer._invalidate_static_cache()
+        self.redraw()
+    
+    def _save_canvas_zoom(self):
+        """Save canvas zoom to settings."""
+        if "Misc" not in self.config:
+            self.config["Misc"] = {}
+        self.config["Misc"]["canvas_zoom"] = str(self.canvas_zoom)
+        with open(self.settings_path, "w") as f:
+            self.config.write(f)
+    
+    def _update_bg_scroll(self):
+        """Update background scroll animation."""
+        speed = getattr(self, 'bg_scroll_speed', 1)
+        reverse = getattr(self, 'reverse_direction', False)
+        direction = 1 if reverse else -1
+        
+        # Cancel existing timer if any
+        if hasattr(self, '_bg_scroll_timer') and self._bg_scroll_timer:
+            self.after_cancel(self._bg_scroll_timer)
+            self._bg_scroll_timer = None
+        
+        if speed <= 0:
+            return
+        
+        # Get canvas and background dimensions
+        try:
+            canvas_w = self.canvas.winfo_width()
+            canvas_h = self.canvas.winfo_height()
+            if canvas_w <= 1 or canvas_h <= 1:
+                self._bg_scroll_timer = self.after(16, self._update_bg_scroll)
+                return
+        except:
+            return
+        
+        # Get the background image width - use fitted width for proper looping
+        bg_width = getattr(self, '_bg_fitted_width', canvas_w)
+        if bg_width <= 0:
+            bg_width = canvas_w
+        
+        # Update scroll offset (use direction to flip sign)
+        effective_speed = float(speed * direction)
+        self._bg_scroll_offset = (self._bg_scroll_offset + effective_speed) % bg_width
+        
+        if self._bg_scroll_offset < 0:
+            self._bg_scroll_offset += float(bg_width)
+        
+        # Update canvas item positions
+        img_x = canvas_w // 2
+        img_y = canvas_h // 2
+        
+        # Check if canvas items exist, recreate if needed
+        try:
+            self.canvas.coords(self._canvas_bg_id, 0, 0)
+        except:
+            # Canvas item doesn't exist, recreate
+            self._canvas_bg_id = self.canvas.create_image(img_x, img_y, anchor="center", image=self.tk_bg_img)
+            self._canvas_bg_id_2 = self.canvas.create_image(img_x + bg_width, img_y, anchor="center", image=self.tk_bg_img)
+            self.canvas.lower(self._canvas_bg_id)
+            self.canvas.lower(self._canvas_bg_id_2)
+        
+        try:
+            self.canvas.coords(self._canvas_bg_id, img_x - self._bg_scroll_offset, img_y)
+            self.canvas.coords(self._canvas_bg_id_2, img_x - self._bg_scroll_offset + bg_width, img_y)
+            # Always update image reference in case it changed
+            self.canvas.itemconfig(self._canvas_bg_id, image=self.tk_bg_img)
+            self.canvas.itemconfig(self._canvas_bg_id_2, image=self.tk_bg_img)
+        except:
+            pass
+        
+        # Schedule next frame
+        self._bg_scroll_timer = self.after(16, self._update_bg_scroll)
     
     def _apply_zoom(self):
         rows, cols = self.zoom_levels[self.zoom_index]
@@ -1554,23 +1919,29 @@ class App(TkinterDnD.Tk):
     # -------------------------------------------------
     
     def save_settings(self):
+        # Ensure sections exist
         if "Settings" not in self.config:
             self.config["Settings"] = {}
-
-        self.config["Settings"]["bezel"] = self.bezel_var.get()
-        self.config["Settings"]["zoom_index"] = str(self.zoom_index)
-        self.config["Settings"]["show_corner_hints"] = str(self.renderer.corner_hints_visible)
-        self.config["Settings"]["dock_background"] = str(self.renderer.dock_visible)
-        self.config["Settings"]["remember_last_theme"] = str(self.remember_last_theme)
-        if self.last_theme_path:
-            self.config["Settings"]["last_theme_path"] = self.last_theme_path
+        # Settings (all menu items)
         self.config["Settings"]["default_folder_color"] = self.default_folder_color_var.get()
-        self.config["Settings"]["empty_slots"] = str(getattr(self, "empty_slots", True))
+        self.config["Settings"]["dock_background"] = str(self.renderer.dock_visible)
         self.config["Settings"]["logo_size"] = str(getattr(self, "logo_size", 60))
+        self.config["Settings"]["show_corner_hints"] = str(self.renderer.corner_hints_visible)
         self.config["Settings"]["single_screen_mode"] = str(getattr(self, "single_screen_stacked_mode", False))
         self.config["Settings"]["apps"] = str(getattr(self, "apps_visible", True))
         self.config["Settings"]["empty_apps"] = str(getattr(self, "empty_apps_visible", True))
-        self.config["Settings"]["magnify_size"] = str(getattr(self, "magnify_size", 200))
+        self.config["Settings"]["empty_slots"] = str(getattr(self, "empty_slots", True))
+        self.config["Settings"]["remember_last_theme"] = str(self.remember_last_theme)
+        self.config["Settings"]["last_theme_path"] = self.last_theme_path or ""
+        self.config["Settings"]["bg_scroll_speed"] = str(getattr(self, "bg_scroll_speed", 1))
+        self.config["Settings"]["reverse_direction"] = str(getattr(self, "reverse_direction", False))
+        
+        # Misc (settings not in the menu)
+        self.config["Misc"]["canvas_zoom"] = str(getattr(self, "canvas_zoom", 1.0))
+        self.config["Misc"]["magnify_window"] = str(getattr(self, "magnify_window", True))
+        self.config["Misc"]["magnify_size"] = str(getattr(self, "magnify_size", 200))
+        self.config["Misc"]["bezel"] = self.bezel_var.get()
+        self.config["Misc"]["zoom_index"] = str(self.zoom_index)
 
         with open(self.settings_path, "w") as f:
             self.config.write(f)
@@ -1754,17 +2125,152 @@ class App(TkinterDnD.Tk):
     # --- Mouse motion tracking ---
     
     def _on_canvas_motion(self, event):
-        """Track mouse position for magnify window."""
+        """Track mouse position for magnify window and handle dragging."""
         self.renderer.mouse_x = event.x
         self.renderer.mouse_y = event.y
+        
+        canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        center_x = canvas_w // 2
+        center_y = canvas_h // 2
+        
+        if canvas_zoom != 1.0:
+            self.renderer.mouse_x = (event.x - center_x) / canvas_zoom + center_x
+            self.renderer.mouse_y = (event.y - center_y) / canvas_zoom + center_y
+        
+        # Handle dragging in bezel edit mode
+        if self._dragging_handle and self._drag_start_pos and self._drag_start_values:
+            dx = event.x - self._drag_start_pos[0]
+            dy = event.y - self._drag_start_pos[1]
+            
+            renderer = self.renderer
+            
+            handle_type = self._dragging_handle
+            
+            # Handle app grid dragging - scale delta by canvas_zoom
+            if handle_type.startswith('grid_'):
+                start = self._drag_start_values
+                canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+                scaled_dx = dx / canvas_zoom if canvas_zoom > 0 else dx
+                scaled_dy = dy / canvas_zoom if canvas_zoom > 0 else dy
+                if handle_type == 'grid_top':
+                    renderer.app_grid_y_offset = start['y_offset'] + scaled_dy
+                elif handle_type == 'grid_bottom':
+                    renderer.app_grid_y_offset = start['y_offset'] + scaled_dy
+                elif handle_type == 'grid_left':
+                    renderer.app_grid_x_offset = start['x_offset'] + scaled_dx
+                elif handle_type == 'grid_right':
+                    renderer.app_grid_x_offset = start['x_offset'] + scaled_dx
+                renderer._invalidate_static_cache()
+                self.redraw()
+            
+            # Handle item grid dragging/resizing (magenta handles)
+            elif handle_type.startswith('item_grid_'):
+                # Enable manual grid override
+                renderer._manual_grid_override = True
+                
+                start = self._drag_start_values
+                edge = handle_type.replace('item_grid_', '')
+                
+                # Get the external screen to access the grid positioning
+                external = renderer.screen_manager.external
+                
+                # Scale delta by canvas_zoom to convert from canvas coords to frame coords
+                canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+                scaled_dx = dx / canvas_zoom if canvas_zoom > 0 else dx
+                scaled_dy = dy / canvas_zoom if canvas_zoom > 0 else dy
+                
+                # Adjust grid height based on edge being dragged
+                # Note: This is a simple implementation - grid is positioned relative to external screen
+                if edge == 'top':
+                    # Moving top edge changes grid position and height
+                    new_y = max(external.y, start['grid_y'] + scaled_dy)
+                    renderer._last_grid_y = new_y
+                    renderer._last_grid_h = start['grid_h'] - scaled_dy
+                elif edge == 'bottom':
+                    # Moving bottom edge changes height only
+                    renderer._last_grid_h = max(50, start['grid_h'] + scaled_dy)
+                elif edge == 'left':
+                    # Moving left edge changes position and width
+                    new_x = max(external.x, start['grid_x'] + scaled_dx)
+                    renderer._last_grid_x = new_x
+                    renderer._last_grid_w = start['grid_w'] - scaled_dx
+                elif edge == 'right':
+                    # Moving right edge changes width only
+                    renderer._last_grid_w = max(50, start['grid_w'] + scaled_dx)
+                
+                renderer._invalidate_static_cache()
+                self.redraw()
+            
+            # Handle screen dragging/resizing - scale delta by canvas_zoom
+            elif '_' in handle_type:
+                parts = handle_type.split('_', 1)
+                if len(parts) == 2:
+                    screen_name, edge = parts
+                    if screen_name in ('main', 'external'):
+                        screen = renderer.screen_manager.main if screen_name == 'main' else renderer.screen_manager.external
+                        start = self._drag_start_values
+                        
+                        # Scale delta by canvas_zoom AND bezel_fit_scale
+                        canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+                        bezel_scale = getattr(renderer, '_bezel_fit_scale', 1.0)
+                        scale_factor = canvas_zoom * bezel_scale
+                        scaled_dx = dx / scale_factor if scale_factor > 0 else dx
+                        scaled_dy = dy / scale_factor if scale_factor > 0 else dy
+                        
+                        # Corner handles - resize both dimensions
+                        if edge in ('tl', 'tr', 'bl', 'br'):
+                            if 't' in edge:  # top
+                                screen.y = max(0, start['y'] + scaled_dy)
+                                screen.h = start['h'] - scaled_dy
+                            if 'b' in edge:  # bottom
+                                screen.h = start['h'] + scaled_dy
+                            if 'l' in edge:  # left
+                                screen.x = max(0, start['x'] + scaled_dx)
+                                screen.w = start['w'] - scaled_dx
+                            if 'r' in edge:  # right
+                                screen.w = start['w'] + scaled_dx
+                        # Edge handles - resize single dimension
+                        elif edge == 'top':
+                            screen.y = max(0, start['y'] + scaled_dy)
+                            screen.h = start['h'] - scaled_dy
+                        elif edge == 'bottom':
+                            screen.h = start['h'] + scaled_dy
+                        elif edge == 'left':
+                            screen.x = max(0, start['x'] + scaled_dx)
+                            screen.w = start['w'] - scaled_dx
+                        elif edge == 'right':
+                            screen.w = start['w'] + scaled_dx
+                        
+                        # Ensure minimum size
+                        screen.w = max(50, screen.w)
+                        screen.h = max(50, screen.h)
+                        
+                        # Update temp screens in renderer
+                        temp_screens = getattr(renderer, '_temp_screens', {})
+                        if screen_name in temp_screens:
+                            temp_screens[screen_name]['x'] = screen.x
+                            temp_screens[screen_name]['y'] = screen.y
+                            temp_screens[screen_name]['w'] = screen.w
+                            temp_screens[screen_name]['h'] = screen.h
+                        
+                        renderer._invalidate_static_cache()
+                        self.redraw()
     
     # --- Canvis clicking ---
 
     def on_canvas_left_click(self, event):
         """Handle left-click for both grid selection and folder menu."""
         
-        # Don't process grid clicks when in bezel edit mode
+        # Handle bezel edit mode - check for handle drag start
         if self.renderer.bezel_edit_mode:
+            handle_info = self._check_handle_click(event.x, event.y)
+            if handle_info:
+                self._dragging_handle = handle_info[0]
+                self._drag_start_pos = (event.x, event.y)
+                self._drag_start_values = handle_info[1]
+                return
             return
         
         # Check if click is on app grid directional arrows (bottom left)
@@ -1841,6 +2347,45 @@ class App(TkinterDnD.Tk):
                 self.folder_menu_open = True
                 self.folder_menu_anchor_index = idx
             self.redraw()
+    
+    def _check_handle_click(self, x, y):
+        """Check if click is on a drag handle. Returns (handle_type, start_values) or None."""
+        renderer = self.renderer
+        canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+        
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        
+        center_x = canvas_w // 2
+        center_y = canvas_h // 2
+        
+        handle_size = 12
+        
+        # Handle positions from renderer are in canvas coords (at zoom=1)
+        # When zoomed, content is scaled and centered, so need to transform click coords
+        screen_info = getattr(renderer, '_screen_handles', {})
+        for screen_name, handles in screen_info.items():
+            for handle_type, hx, hy in handles:
+                # Transform click from canvas coords back to content coords
+                content_x = (x - center_x) / canvas_zoom + center_x if canvas_zoom > 0 else x
+                content_y = (y - center_y) / canvas_zoom + center_y if canvas_zoom > 0 else y
+                
+                if abs(content_x - hx) <= handle_size and abs(content_y - hy) <= handle_size:
+                    return (f'{screen_name}_{handle_type}', {
+                        'x': renderer.screen_manager.main.x if screen_name == 'main' else renderer.screen_manager.external.x,
+                        'y': renderer.screen_manager.main.y if screen_name == 'main' else renderer.screen_manager.external.y,
+                        'w': renderer.screen_manager.main.w if screen_name == 'main' else renderer.screen_manager.external.w,
+                        'h': renderer.screen_manager.main.h if screen_name == 'main' else renderer.screen_manager.external.h,
+                    })
+        
+        return None
+    
+    def on_canvas_left_release(self, event):
+        """Handle mouse release to apply drag changes."""
+        if self._dragging_handle:
+            self._dragging_handle = None
+            self._drag_start_pos = None
+            self._drag_start_values = None
     
     # --- Grid index ---
     def get_grid_index_at(self, click_x, click_y):
@@ -1978,15 +2523,95 @@ class App(TkinterDnD.Tk):
         
         self._load_folder_color_previews()
         
-        # Generate the current frame via Renderer (handles static cache internally)
-        frame_image = self.renderer.composite((canvas_w, canvas_h))
-
-        # Correct Tkinter handling: update or create image once
-        self.tk_img = ImageTk.PhotoImage(frame_image)
-        if not hasattr(self, "_canvas_image_id"):
-            self._canvas_image_id = self.canvas.create_image(0, 0, anchor="nw", image=self.tk_img)
+        # Generate background image (fitted to canvas, independent of zoom)
+        bg_image = self.renderer.get_background_image((canvas_w, canvas_h))
+        
+        # Get clean content WITHOUT background (so we don't duplicate)
+        clean_content = self.renderer.composite((canvas_w, canvas_h), skip_background=True, skip_borders=True, skip_handles=True, skip_magnify=True)
+        
+        # Get content with background for magnify window
+        content_with_bg = self.renderer.composite((canvas_w, canvas_h), skip_background=False, skip_borders=True, skip_handles=True, skip_magnify=True)
+        
+        # Add borders/handles overlays to a copy for canvas display
+        if self.renderer.bezel_edit_mode:
+            content_image = self.renderer.draw_overlays(clean_content.copy(), (canvas_w, canvas_h))
         else:
+            content_image = clean_content
+        
+        # Apply canvas zoom to content only (bg stays fitted to canvas)
+        canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+        if canvas_zoom != 1.0:
+            new_w = int(canvas_w * canvas_zoom)
+            new_h = int(canvas_h * canvas_zoom)
+            content_image = content_image.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        
+        # Center positions
+        img_x = canvas_w // 2
+        img_y = canvas_h // 2
+        
+        # Draw background first (fitted to canvas, independent of zoom)
+        # For scrolling background, we need to create two image items
+        self.tk_bg_img = ImageTk.PhotoImage(bg_image)
+        
+        # Store fitted bg width for scrolling calculations (from renderer)
+        self._bg_fitted_width = getattr(self.renderer, '_bg_fitted_width', bg_image.width if bg_image else canvas_w)
+        
+        # Reset scroll offset when bg changes (new theme loaded)
+        if not hasattr(self, '_bg_scroll_offset'):
+            self._bg_scroll_offset = 0.0  # Use float for sub-pixel precision
+        else:
+            # Check if bg changed by comparing sizes
+            old_bg = getattr(self, '_last_bg_size', (0, 0))
+            new_bg_size = (bg_image.width, bg_image.height) if bg_image else (0, 0)
+            if old_bg != new_bg_size:
+                self._bg_scroll_offset = 0.0
+                self._last_bg_size = new_bg_size
+        
+        if not hasattr(self, '_bg_scroll_timer'):
+            self._bg_scroll_timer = None
+        
+        # Get background width for scrolling calculations
+        bg_width = self._bg_fitted_width
+        
+        if not hasattr(self, "_canvas_bg_id") or self._canvas_bg_id is None:
+            self._canvas_bg_id = self.canvas.create_image(img_x, img_y, anchor="center", image=self.tk_bg_img)
+            self._canvas_bg_id_2 = self.canvas.create_image(img_x + bg_width, img_y, anchor="center", image=self.tk_bg_img)
+            # Lower bg behind content
+            self.canvas.lower(self._canvas_bg_id)
+            self.canvas.lower(self._canvas_bg_id_2)
+        else:
+            self.canvas.coords(self._canvas_bg_id, img_x - self._bg_scroll_offset, img_y)
+            self.canvas.coords(self._canvas_bg_id_2, img_x - self._bg_scroll_offset + bg_width, img_y)
+            self.canvas.itemconfig(self._canvas_bg_id, image=self.tk_bg_img)
+            self.canvas.itemconfig(self._canvas_bg_id_2, image=self.tk_bg_img)
+        
+        # Start or update background scroll animation
+        self._update_bg_scroll()
+        
+        # Draw content on top (may be zoomed, no background included)
+        self.tk_img = ImageTk.PhotoImage(content_image)
+        if not hasattr(self, "_canvas_image_id"):
+            self._canvas_image_id = self.canvas.create_image(img_x, img_y, anchor="center", image=self.tk_img)
+        else:
+            self.canvas.coords(self._canvas_image_id, img_x, img_y)
             self.canvas.itemconfig(self._canvas_image_id, image=self.tk_img)
+        
+        # Draw magnify window separately (without canvas zoom, at original position)
+        if self.renderer.bezel_edit_mode and getattr(self.renderer, 'magnify_window', True):
+            mag_overlay = self.renderer.get_magnify_window((canvas_w, canvas_h), content_with_bg)
+            if mag_overlay:
+                self.tk_mag_img = ImageTk.PhotoImage(mag_overlay)
+                mag_margin = 20
+                mag_x = canvas_w - mag_overlay.width - mag_margin
+                mag_y = canvas_h - mag_overlay.height - mag_margin
+                if not hasattr(self, "_canvas_mag_id"):
+                    self._canvas_mag_id = self.canvas.create_image(mag_x, mag_y, anchor="nw", image=self.tk_mag_img)
+                else:
+                    self.canvas.coords(self._canvas_mag_id, mag_x, mag_y)
+                    self.canvas.itemconfig(self._canvas_mag_id, image=self.tk_mag_img)
+        elif hasattr(self, "_canvas_mag_id"):
+            self.canvas.delete(self._canvas_mag_id)
+            delattr(self, "_canvas_mag_id")
 
         # Force canvas to update, helps maximize responsiveness
         # self.canvas.update_idletasks()

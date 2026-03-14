@@ -119,6 +119,7 @@ class Renderer:
     
     def apply_device_settings(self, device_name: str):
         """Apply device settings from device.json in the bezel folder"""
+        
         # Get frame dimensions from loaded bezel image FIRST (needed for centering)
         if self.bezel_img:
             Screen.FRAME_WIDTH = self.bezel_img.width
@@ -128,6 +129,9 @@ class Renderer:
         
         # Load device.json from the bezel folder (to pick up external edits)
         device_file = ASSETS_DIR / "bezels" / device_name / "device.json"
+        
+        device = None
+        needs_save = False
         
         if device_file.exists():
             try:
@@ -149,27 +153,115 @@ class Renderer:
         
         # Update screen mode based on screen_amount
         screen_amount = device.get("screen_amount", 2)
-        mode = "single" if screen_amount == 1 else "dual"
+        self._device_screen_amount = screen_amount  # Store original device screen amount
+        
+        # Check if there's a saved display mode for this bezel, otherwise use device default
+        saved_mode = self.BEZEL_SCREEN_MODE.get(self.current_bezel_name)
+        if saved_mode:
+            mode = saved_mode
+        else:
+            mode = "single" if screen_amount == 1 else "dual"
+        self._display_mode = mode
         self.BEZEL_SCREEN_MODE[self.current_bezel_name] = mode
         
-        # Update screen positions
+        # Update screen positions - convert pixels to percentages if needed
         if "screens" in device:
             screens = device["screens"]
             if "main" in screens:
                 main = screens["main"]
-                Screen.TOP_SCREEN = (main["x"], main["y"], main["w"], main["h"])
+                # Check if values are pixels (>1.0) or percentages (<=1.0)
+                if main.get("w", 0) > 1.0 or main.get("h", 0) > 1.0:
+                    # Pixel values - convert to percentages
+                    pct = Screen.pixels_to_percentages((main["x"], main["y"], main["w"], main["h"]))
+                    main["x_pct"] = round(pct[0], 4)
+                    main["y_pct"] = round(pct[1], 4)
+                    main["w_pct"] = round(pct[2], 4)
+                    main["h_pct"] = round(pct[3], 4)
+                    needs_save = True
+                else:
+                    # Already percentages or has _pct versions
+                    pass
+            
             if "external" in screens:
                 ext = screens["external"]
-                Screen.BOTTOM_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
-                Screen.SINGLE_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+                if ext.get("w", 0) > 1.0 or ext.get("h", 0) > 1.0:
+                    pct = Screen.pixels_to_percentages((ext["x"], ext["y"], ext["w"], ext["h"]))
+                    ext["x_pct"] = round(pct[0], 4)
+                    ext["y_pct"] = round(pct[1], 4)
+                    ext["w_pct"] = round(pct[2], 4)
+                    ext["h_pct"] = round(pct[3], 4)
+                    needs_save = True
         
-        # Update app grid settings (dock at bottom)
+        # Save converted percentages back to device.json (quiet conversion - users still see pixels in file)
+        if needs_save:
+            try:
+                with open(device_file, 'w') as f:
+                    json.dump(device, f, indent=4)
+            except Exception as e:
+                print(f"Failed to save converted device.json: {e}")
+        
+        # Apply screen positions using percentages
+        if "screens" in device:
+            screens = device["screens"]
+            if "main" in screens:
+                main = screens["main"]
+                # Use percentage values if available, otherwise use pixel values
+                if "x_pct" in main:
+                    px = main.get("x_pct", Screen.TOP_SCREEN_PCT[0])
+                    py = main.get("y_pct", Screen.TOP_SCREEN_PCT[1])
+                    pw = main.get("w_pct", Screen.TOP_SCREEN_PCT[2])
+                    ph = main.get("h_pct", Screen.TOP_SCREEN_PCT[3])
+                    Screen.TOP_SCREEN = Screen.percentages_to_pixels((px, py, pw, ph))
+                else:
+                    Screen.TOP_SCREEN = (main["x"], main["y"], main["w"], main["h"])
+            
+            if "external" in screens:
+                ext = screens["external"]
+                if "x_pct" in ext:
+                    px = ext.get("x_pct", Screen.BOTTOM_SCREEN_PCT[0])
+                    py = ext.get("y_pct", Screen.BOTTOM_SCREEN_PCT[1])
+                    pw = ext.get("w_pct", Screen.BOTTOM_SCREEN_PCT[2])
+                    ph = ext.get("h_pct", Screen.BOTTOM_SCREEN_PCT[3])
+                    Screen.BOTTOM_SCREEN = Screen.percentages_to_pixels((px, py, pw, ph))
+                    Screen.SINGLE_SCREEN = Screen.percentages_to_pixels((px, py, pw, ph))
+                else:
+                    Screen.BOTTOM_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+                    Screen.SINGLE_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+            
+            # If device originally had 1 screen, stack main screen on external
+            if self._device_screen_amount == 1:
+                # Set screen_manager mode to single first (required for stacking to work)
+                self.screen_manager._screen_mode = "single"
+                self.screen_manager.external.rect = Screen.SINGLE_SCREEN
+                self.screen_manager._update_single_screen_main_position()
+                Screen.TOP_SCREEN = self.screen_manager.main.rect
+        
+        # Update app grid settings - convert pixels to percentages if needed
         if "app_grid" in device:
             grid = device["app_grid"]
-            self.app_grid_x_offset = grid.get("x_offset", 0)
-            self.app_grid_y_offset = grid.get("y_offset", -40)
-            self.app_grid_width = grid.get("width", 400)
-            self.app_grid_icon_size = grid.get("height", 50)
+            frame_w = Screen.FRAME_WIDTH
+            frame_h = Screen.FRAME_HEIGHT
+            
+            # Convert pixel values to percentages if needed
+            if grid.get("width", 0) > 1.0 or grid.get("height", 0) > 1.0:
+                grid["x_offset_pct"] = round(grid.get("x_offset", 0) / frame_w, 4) if frame_w else 0
+                grid["y_offset_pct"] = round(grid.get("y_offset", -40) / frame_h, 4) if frame_h else 0
+                grid["width_pct"] = round(grid.get("width", 400) / frame_w, 4) if frame_w else 0
+                grid["height_pct"] = round(grid.get("height", 50) / frame_h, 4) if frame_h else 0
+                needs_save = True
+            
+            # Apply settings - use percentages if available
+            if "width_pct" in grid:
+                self.app_grid_x_offset = round(grid.get("x_offset_pct", 0) * frame_w)
+                self.app_grid_y_offset = round(grid.get("y_offset_pct", -0.04) * frame_h)
+                self.app_grid_width = round(grid.get("width_pct", 0.455) * frame_w)
+                self.app_grid_icon_size = round(grid.get("height_pct", 0.048) * frame_h)
+            else:
+                self.app_grid_x_offset = grid.get("x_offset", 0)
+                self.app_grid_y_offset = grid.get("y_offset", -40)
+                self.app_grid_width = grid.get("width", 400)
+                self.app_grid_icon_size = grid.get("height", 50)
+            
             self.app_grid_icon_scale = grid.get("icon_scale", 1.0)
         
         # Update screen manager with new dimensions
@@ -194,13 +286,27 @@ class Renderer:
         )
         Screen.BOTTOM_SCREEN = Screen.SINGLE_SCREEN
         
-        # Default to centered main screen
-        Screen.TOP_SCREEN = (
-            (frame_w - screen_w) // 2,
-            (frame_h - screen_h * 2 - 50) // 2,
-            screen_w,
-            screen_h
+        # Check if in bezel edit mode with 1 screen selected, or if device originally had 1 screen
+        use_single_mode = (
+            (self.bezel_edit_mode and self._temp_screen_amount == 1) or 
+            self._device_screen_amount == 1
         )
+        
+        if use_single_mode:
+            # Single screen mode - stack main screen on top of external
+            self.screen_manager._screen_mode = "single"
+            Screen.TOP_SCREEN = Screen.SINGLE_SCREEN
+            self.screen_manager.external.rect = Screen.SINGLE_SCREEN
+            self.screen_manager._update_single_screen_main_position()
+            Screen.TOP_SCREEN = self.screen_manager.main.rect
+        else:
+            # Default to centered main screen (upper half)
+            Screen.TOP_SCREEN = (
+                (frame_w - screen_w) // 2,
+                (frame_h - screen_h * 2 - 50) // 2,
+                screen_w,
+                screen_h
+            )
     
     def save_device_app_grid_settings(self):
         """Save current app_grid settings to devices.json for the current device"""
@@ -337,10 +443,21 @@ class Renderer:
         
         # Apply app grid settings
         if self._temp_app_grid:
-            self.app_grid_x_offset = self._temp_app_grid.get("x_offset", 0)
-            self.app_grid_y_offset = self._temp_app_grid.get("y_offset", -40)
-            self.app_grid_width = self._temp_app_grid.get("width", 400)
-            self.app_grid_icon_size = self._temp_app_grid.get("icon_size", 50)
+            # Handle both percentage and pixel keys
+            frame_w = Screen.FRAME_WIDTH
+            frame_h = Screen.FRAME_HEIGHT
+            self.app_grid_x_offset = self._temp_app_grid.get("x_offset_pct", 0)
+            if isinstance(self.app_grid_x_offset, float):
+                self.app_grid_x_offset = round(self.app_grid_x_offset * frame_w) if frame_w else 0
+            self.app_grid_y_offset = self._temp_app_grid.get("y_offset_pct", -0.04)
+            if isinstance(self.app_grid_y_offset, float):
+                self.app_grid_y_offset = round(self.app_grid_y_offset * frame_h) if frame_h else 0
+            self.app_grid_width = self._temp_app_grid.get("width_pct", 0.455)
+            if isinstance(self.app_grid_width, float):
+                self.app_grid_width = round(self.app_grid_width * frame_w) if frame_w else 0
+            self.app_grid_icon_size = self._temp_app_grid.get("height_pct", 0.048)
+            if isinstance(self.app_grid_icon_size, float):
+                self.app_grid_icon_size = round(self.app_grid_icon_size * frame_h) if frame_h else 0
             self.app_grid_icon_scale = self._temp_app_grid.get("icon_scale", 1.0)
         
         # Save to JSON
@@ -361,10 +478,31 @@ class Renderer:
         self._apply_screen_positions(self._saved_screens)
         
         if self._saved_app_grid:
-            self.app_grid_x_offset = self._saved_app_grid.get("x_offset", 0)
-            self.app_grid_y_offset = self._saved_app_grid.get("y_offset", -40)
-            self.app_grid_width = self._saved_app_grid.get("width", 400)
-            self.app_grid_icon_size = self._saved_app_grid.get("icon_size", 50)
+            frame_w = Screen.FRAME_WIDTH
+            frame_h = Screen.FRAME_HEIGHT
+            
+            # Check for pixel keys first (what we save), then percentage keys (fallback)
+            if "x_offset" in self._saved_app_grid:
+                # Pixel values
+                self.app_grid_x_offset = self._saved_app_grid.get("x_offset", 0)
+                self.app_grid_y_offset = self._saved_app_grid.get("y_offset", -0.04 * frame_h if frame_h else 0)
+                self.app_grid_width = self._saved_app_grid.get("width", 0.455 * frame_w if frame_w else 0)
+                self.app_grid_icon_size = self._saved_app_grid.get("icon_size", 0.048 * frame_h if frame_h else 0)
+            else:
+                # Percentage values
+                self.app_grid_x_offset = self._saved_app_grid.get("x_offset_pct", 0)
+                if isinstance(self.app_grid_x_offset, float):
+                    self.app_grid_x_offset = round(self.app_grid_x_offset * frame_w) if frame_w else 0
+                self.app_grid_y_offset = self._saved_app_grid.get("y_offset_pct", -0.04)
+                if isinstance(self.app_grid_y_offset, float):
+                    self.app_grid_y_offset = round(self.app_grid_y_offset * frame_h) if frame_h else 0
+                self.app_grid_width = self._saved_app_grid.get("width_pct", 0.455)
+                if isinstance(self.app_grid_width, float):
+                    self.app_grid_width = round(self.app_grid_width * frame_w) if frame_w else 0
+                self.app_grid_icon_size = self._saved_app_grid.get("height_pct", 0.048)
+                if isinstance(self.app_grid_icon_size, float):
+                    self.app_grid_icon_size = round(self.app_grid_icon_size * frame_h) if frame_h else 0
+            
             self.app_grid_icon_scale = self._saved_app_grid.get("icon_scale", 1.0)
         
         # Exit edit mode
@@ -372,47 +510,101 @@ class Renderer:
     
     def _get_current_screen_amount(self) -> int:
         """Get current screen amount (1 or 2)"""
-        mode = self.BEZEL_SCREEN_MODE.get(self.current_bezel_name, "dual")
+        # Use _display_mode for current user selection
+        mode = getattr(self, '_display_mode', self.BEZEL_SCREEN_MODE.get(self.current_bezel_name, "dual"))
         return 1 if mode == "single" else 2
     
     def _get_current_screens(self) -> dict:
-        """Get current screen positions"""
-        return {
-            "main": {
-                "x": Screen.TOP_SCREEN[0],
-                "y": Screen.TOP_SCREEN[1],
-                "w": Screen.TOP_SCREEN[2],
-                "h": Screen.TOP_SCREEN[3]
-            },
-            "external": {
-                "x": Screen.BOTTOM_SCREEN[0],
-                "y": Screen.BOTTOM_SCREEN[1],
-                "w": Screen.BOTTOM_SCREEN[2],
-                "h": Screen.BOTTOM_SCREEN[3]
+        """Get current screen positions as percentages"""
+        # Use _display_mode for current user selection
+        mode = getattr(self, '_display_mode', self.BEZEL_SCREEN_MODE.get(self.current_bezel_name, "dual"))
+        
+        # Convert pixel positions to percentages
+        main_pct = Screen.pixels_to_percentages(Screen.TOP_SCREEN)
+        
+        if mode == "single":
+            ext_pct = Screen.pixels_to_percentages(Screen.SINGLE_SCREEN)
+            return {
+                "main": {
+                    "x_pct": round(main_pct[0], 4),
+                    "y_pct": round(main_pct[1], 4),
+                    "w_pct": round(main_pct[2], 4),
+                    "h_pct": round(main_pct[3], 4)
+                },
+                "external": {
+                    "x_pct": round(ext_pct[0], 4),
+                    "y_pct": round(ext_pct[1], 4),
+                    "w_pct": round(ext_pct[2], 4),
+                    "h_pct": round(ext_pct[3], 4)
+                }
             }
-        }
+        else:
+            ext_pct = Screen.pixels_to_percentages(Screen.BOTTOM_SCREEN)
+            return {
+                "main": {
+                    "x_pct": round(main_pct[0], 4),
+                    "y_pct": round(main_pct[1], 4),
+                    "w_pct": round(main_pct[2], 4),
+                    "h_pct": round(main_pct[3], 4)
+                },
+                "external": {
+                    "x_pct": round(ext_pct[0], 4),
+                    "y_pct": round(ext_pct[1], 4),
+                    "w_pct": round(ext_pct[2], 4),
+                    "h_pct": round(ext_pct[3], 4)
+                }
+            }
     
     def _apply_screen_amount(self, amount: int):
         """Apply screen amount change"""
+        
         if amount == 1:
+            self._display_mode = "single"
             self.BEZEL_SCREEN_MODE[self.current_bezel_name] = "single"
             self.screen_manager.set_single_screen_mode()
         else:
+            self._display_mode = "dual"
             self.BEZEL_SCREEN_MODE[self.current_bezel_name] = "dual"
-            self.screen_manager.set_dual_screen_mode()
+            
+            # If device originally had 1 screen, keep main screen stacked on external (hidden)
+            if self._device_screen_amount == 1:
+                # Ensure external.rect is set first before stacking
+                self.screen_manager.external.rect = Screen.SINGLE_SCREEN
+                self.screen_manager._screen_mode = "single"
+                self.screen_manager._update_single_screen_main_position()
+                Screen.TOP_SCREEN = self.screen_manager.main.rect
+            else:
+                self.screen_manager.set_dual_screen_mode()
     
     def _apply_screen_positions(self, screens: dict):
-        """Apply screen position changes"""
-        if "main" in screens:
-            main = screens["main"]
-            Screen.TOP_SCREEN = (main["x"], main["y"], main["w"], main["h"])
-            self.screen_manager.main.rect = Screen.TOP_SCREEN
+        """Apply saved screen positions from device.json"""
+        if not screens:
+            return
+            
+        # Check if device has main screen defined - if not, don't try to position it
+        has_main = "main" in screens
         
+        # Set bottom screen (always defined)
         if "external" in screens:
             ext = screens["external"]
-            Screen.BOTTOM_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
-            Screen.SINGLE_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+            # Handle both percentage and pixel keys
+            if "x_pct" in ext:
+                pct = (ext.get("x_pct", 0), ext.get("y_pct", 0), ext.get("w_pct", 1), ext.get("h_pct", 1))
+                pixel_pos = Screen.percentages_to_pixels(pct)
+                Screen.BOTTOM_SCREEN = pixel_pos
+                Screen.SINGLE_SCREEN = pixel_pos
+            else:
+                Screen.BOTTOM_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
+                Screen.SINGLE_SCREEN = (ext["x"], ext["y"], ext["w"], ext["h"])
             self.screen_manager.external.rect = Screen.BOTTOM_SCREEN
+            
+            # If device originally had 1 screen, stack main screen on external
+            if self._device_screen_amount == 1:
+                # Set screen_manager mode to single first (required for stacking to work)
+                self.screen_manager._screen_mode = "single"
+                self.screen_manager.external.rect = Screen.SINGLE_SCREEN
+                self.screen_manager._update_single_screen_main_position()
+                Screen.TOP_SCREEN = self.screen_manager.main.rect
     
     def _save_all_device_settings(self):
         """Save all device settings (screens + app_grid) to device.json in the bezel folder"""
@@ -439,15 +631,36 @@ class Renderer:
             else:
                 existing_config = {}
             
-            # Build new config with display_name at the top
-            # Default to folder name with proper capitalization if display_name is missing
+            # Build new config with display_name at the top (save as pixels for user readability)
+            # Internally the software converts to percentages for relative positioning
+            frame_w = Screen.FRAME_WIDTH
+            frame_h = Screen.FRAME_HEIGHT
+            
+            # Get current screen positions as pixels
+            screens = self._get_current_screens()
+            # Convert percentage values back to pixels for saving
+            main_pct = (screens.get("main", {}).get("x_pct", 0), screens.get("main", {}).get("y_pct", 0), 
+                       screens.get("main", {}).get("w_pct", 1), screens.get("main", {}).get("h_pct", 1))
+            main_pixel = Screen.percentages_to_pixels(main_pct)
+            ext_pct = (screens.get("external", {}).get("x_pct", 0), screens.get("external", {}).get("y_pct", 0),
+                       screens.get("external", {}).get("w_pct", 1), screens.get("external", {}).get("h_pct", 1))
+            ext_pixel = Screen.percentages_to_pixels(ext_pct)
+            
             display_name = existing_config.get("display_name", device_name.title())
             
             device_config = {
                 "display_name": display_name,
                 "screen_amount": self._get_current_screen_amount(),
-                "screens": self._get_current_screens(),
+                "screens": {
+                    "main": {
+                        "x": main_pixel[0], "y": main_pixel[1], "w": main_pixel[2], "h": main_pixel[3]
+                    },
+                    "external": {
+                        "x": ext_pixel[0], "y": ext_pixel[1], "w": ext_pixel[2], "h": ext_pixel[3]
+                    }
+                },
                 "app_grid": {
+                    "x_offset": self.app_grid_x_offset,
                     "y_offset": self.app_grid_y_offset,
                     "width": self.app_grid_width,
                     "height": self.app_grid_icon_size,
@@ -457,7 +670,6 @@ class Renderer:
             
             with open(device_file, 'w') as f:
                 json.dump(device_config, f, indent=2)
-            print(f"Saved device settings for '{device_name}' to {device_file}")
             
             # Also update the in-memory DEVICES dict
             self.DEVICES[device_name] = device_config
@@ -508,6 +720,12 @@ class Renderer:
         self._saved_screen_amount = None  # Saved state for revert
         self._saved_screens = {}
         self._saved_app_grid = {}
+        self._device_screen_amount = 2  # Original device screen amount (from device.json)
+        self._display_mode = "dual"  # User's display mode selection: "single" or "dual" (separate from device)
+        self._stacked_lookup = {}  # Lookup table for single stacked mode: {rows: {"offset_pct": x, "scale_factor": y}}
+        self._screen_handles = {'main': [], 'external': []}  # Handle positions for drag
+        self._grid_handles = []  # Handle positions for grid in bezel edit mode
+        self._manual_grid_override = False  # Use manually adjusted grid size from handles
         
         # App grid settings (region for 5 evenly spaced app icons)
         self.app_grid_x_offset = 0  # Horizontal offset from center
@@ -524,6 +742,7 @@ class Renderer:
         self.mouse_y = 0
         self.magnify_size = 200  # Size of magnify window
         self.magnify_zoom = 2.667  # Zoom level (2.0 * 200/150)
+        self.magnify_window = True  # Toggle for magnify window
         
         self._last_canvas_size = None
         
@@ -558,6 +777,8 @@ class Renderer:
         self._static_cache_image = None
         self._static_cache_size = None
         self._static_cache_dirty = True
+        self._cached_clean_content = None  # Cached clean content without borders/handles
+        self._cached_clean_content_size = None
     
         # Game image cache (must exist before _load_frame is called)
         self._game_image_cache = {}      # path → loaded PIL image
@@ -985,17 +1206,27 @@ class Renderer:
         self._sel_anim_start = None
     
     def _update_screen_mode(self):
-        """Update screen positions based on current bezel's screen mode."""
-        mode = self.BEZEL_SCREEN_MODE.get(self.current_bezel_name, "dual")
+        """Update screen positions based on current display mode and device configuration."""
+        # Use _display_mode for user selection, not BEZEL_SCREEN_MODE
+        # (BEZEL_SCREEN_MODE is for persisting per-bezel settings)
+        mode = getattr(self, '_display_mode', self.BEZEL_SCREEN_MODE.get(self.current_bezel_name, "dual"))
         
         if mode == "single":
             # Single screen mode: bottom screen fills the display
             self.screen_manager.set_single_screen_mode()
         else:
             # Dual screen mode: use standard positions
-            self.screen_manager.set_dual_screen_mode()
+            # But for 1-screen devices, we need to keep screens stacked
+            if self._device_screen_amount == 1:
+                # 1-screen device in dual mode: keep main screen stacked on external (hidden)
+                self.screen_manager.external.rect = Screen.SINGLE_SCREEN
+                self.screen_manager._screen_mode = "single"
+                self.screen_manager._update_single_screen_main_position()
+                Screen.TOP_SCREEN = self.screen_manager.main.rect
+            else:
+                self.screen_manager.set_dual_screen_mode()
     
-    def _render_ui_elements(self, base, canvas_w, canvas_h, device_x, device_y, scale):
+    def _render_ui_elements(self, base, canvas_w, canvas_h, device_x, device_y, scale, skip_borders=False):
         """Render UI elements based on screen mode and visibility settings."""
         mode = self.screen_manager.screen_mode
         stacked = self._single_screen_stacked
@@ -1103,9 +1334,9 @@ class Renderer:
                 paste_ui(self.ui_s_ds_right_cornerhints, ext_x, ext_y, ext_w, ext_h, self.ui_s_ds_right_cornerhints_anchor)
         
         # Render app grid at bottom of external/bottom screen
-        self._render_app_grid(base, canvas_w, canvas_h, ext_x, ext_y, ext_w, ext_h, mode, scale)
+        self._render_app_grid(base, canvas_w, canvas_h, ext_x, ext_y, ext_w, ext_h, mode, scale, skip_borders)
     
-    def _render_app_grid(self, base, canvas_w, canvas_h, ext_x, ext_y, ext_w, ext_h, mode, scale):
+    def _render_app_grid(self, base, canvas_w, canvas_h, ext_x, ext_y, ext_w, ext_h, mode, scale, skip_borders=False):
         """Render 5 circular app icons evenly distributed in a defined region."""
         from PIL import ImageDraw
         
@@ -1163,7 +1394,7 @@ class Renderer:
         }
         
         # Draw temporary border around app grid area only in bezel edit mode
-        if self.bezel_edit_mode:
+        if self.bezel_edit_mode and not skip_borders:
             border_draw = ImageDraw.Draw(base)
             border_draw.rectangle(
                 [grid_left, grid_top - 5, grid_right, grid_bottom + 5],
@@ -1217,9 +1448,76 @@ class Renderer:
                 base.alpha_composite(circular_app, (icon_x, icon_y))
         
         # Draw magnify window in bezel edit mode (hide handles in zoom view)
-        if self.bezel_edit_mode:
+        # Only draw if not skipped (controlled by skip_magnify parameter in composite)
+        if getattr(self, '_skip_magnify_render', False):
+            pass  # Skip magnify when rendering content separately
+        elif self.bezel_edit_mode and getattr(self, 'magnify_window', True):
             # Draw magnify window (lightweight - just crops and scales, no complex calculations)
             self._render_magnify_window(base, canvas_w, canvas_h, grid_left, grid_top, grid_right, grid_bottom, icon_size)
+    
+    def _is_in_magnify_area(self, canvas_w, canvas_h):
+        """Check if magnify window is active and return its bounds."""
+        if not self.bezel_edit_mode or not getattr(self, 'magnify_window', True):
+            return None
+        mag_size = self.magnify_size
+        mag_margin = 20
+        mag_x = canvas_w - mag_size - mag_margin
+        mag_y = canvas_h - mag_size - mag_margin
+        return (mag_x, mag_y, mag_x + mag_size, mag_y + mag_size)
+    
+    def get_magnify_window(self, canvas_size: tuple[int, int], base_image: Image.Image = None) -> Image.Image:
+        """Get just the magnify window overlay (not scaled with canvas zoom)."""
+        if not self.bezel_edit_mode or not getattr(self, 'magnify_window', True):
+            return None
+        
+        canvas_w, canvas_h = canvas_size
+        
+        # Get grid positions - use cached values if available
+        grid_left = getattr(self, '_app_grid_debug', {}).get('grid_left', canvas_w // 2 - 100)
+        grid_right = getattr(self, '_app_grid_debug', {}).get('grid_right', canvas_w // 2 + 100)
+        grid_top = getattr(self, '_app_grid_debug', {}).get('grid_top', canvas_h // 2 - 50)
+        grid_bottom = getattr(self, '_app_grid_debug', {}).get('grid_bottom', canvas_h // 2 + 50)
+        icon_size = 40
+        
+        # Use provided base image or create a placeholder
+        if base_image is None:
+            base = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+        else:
+            base = base_image
+        
+        # Render magnify to a separate image
+        mag_size = self.magnify_size
+        mag_margin = 20
+        mag_x = canvas_w - mag_size - mag_margin
+        mag_y = canvas_h - mag_size - mag_margin
+        zoom = getattr(self, 'magnify_zoom', 2.0)
+        mouse_x = getattr(self, 'mouse_x', (grid_left + grid_right) // 2)
+        mouse_y = getattr(self, 'mouse_y', (grid_top + grid_bottom) // 2)
+        
+        src_half = int(mag_size / zoom / 2)
+        src_left = max(0, mouse_x - src_half)
+        src_top = max(0, mouse_y - src_half)
+        src_right = min(canvas_w, mouse_x + src_half)
+        src_bottom = min(canvas_h, mouse_y + src_half)
+        
+        if src_right > src_left and src_bottom > src_top:
+            try:
+                region = base.crop((src_left, src_top, src_right, src_bottom))
+                magnified = region.resize((mag_size, mag_size), Image.Resampling.NEAREST)
+                
+                # Create magnify overlay image
+                mag_overlay = Image.new("RGBA", (mag_size + 4, mag_size + 4), (0, 0, 0, 0))
+                from PIL import ImageDraw
+                draw = ImageDraw.Draw(mag_overlay)
+                draw.rectangle([0, 0, mag_size + 3, mag_size + 3], fill=(40, 40, 40, 200), outline=(100, 100, 100, 255), width=2)
+                mag_overlay.alpha_composite(magnified, (2, 2))
+                draw.rectangle([2, 2, mag_size + 2, mag_size + 2], outline=(255, 255, 255, 255), width=1)
+                
+                return mag_overlay
+            except Exception:
+                pass
+        
+        return None
     
     def _render_magnify_window(self, base, canvas_w, canvas_h, grid_left, grid_top, grid_right, grid_bottom, icon_size):
         """Render a magnified view centered on mouse position, clamped to canvas bounds."""
@@ -1601,34 +1899,18 @@ class Renderer:
     # -----------------------------
     def _fit_background(self, base: Image.Image, bg: Image.Image, canvas_size: tuple[int,int], device_rect: tuple[int,int,int,int]):
         """
-        Fit the bg image to the height of the canvas (not device area).
-        If canvas grows too wide (fitted wallpaper doesn't reach canvas edges), stretch to fill.
+        Stretch bg to fill entire canvas for seamless scrolling.
         canvas_size = (canvas_w, canvas_h)
         device_rect = (device_x, device_y, device_w, device_h)
         """
         if not bg:
             return
         canvas_w, canvas_h = canvas_size
-        bw, bh = bg.size
         
-        # Calculate fitted bg size (fit to canvas height, center horizontally)
-        scale = canvas_h / bh
-        new_w = int(bw * scale)
-        new_h = canvas_h
-        
-        # Center horizontally on device area
-        device_x, device_y, device_w, device_h = device_rect
-        fitted_x = device_x + (device_w - new_w) // 2
-        
-        # Check if fitted wallpaper is narrower than canvas (canvas too wide)
-        if new_w < canvas_w:
-            # Stretch to fill entire canvas
-            bg_resized = bg.resize((canvas_w, canvas_h), Image.Resampling.BILINEAR)
-            base.alpha_composite(bg_resized, (0, 0))
-        else:
-            # Regular fit - wallpaper is wide enough, just center it
-            bg_resized = bg.resize((new_w, new_h), Image.Resampling.BILINEAR)
-            base.alpha_composite(bg_resized, (fitted_x, 0))
+        # Stretch to fill entire canvas for seamless scrolling
+        bg_resized = bg.resize((canvas_w, canvas_h), Image.Resampling.BILINEAR)
+        self._bg_fitted_width = canvas_w  # Store for scroll calculations
+        base.alpha_composite(bg_resized, (0, 0))
 
     # Video First Frame
     
@@ -2142,31 +2424,41 @@ class Renderer:
         self._load_app_images()
     
     def _load_app_images(self):
-        """Load 5 random app images from assets/apps folder."""
+        """Load 5 app images from assets/apps folder. First slot is 'app drawer.png' if it exists."""
         apps_dir = ASSETS_DIR / "apps"
         if not apps_dir.exists():
             self._app_images = []
             self._app_images_loaded = True
             return
         
-        # Get all image files from apps folder
+        # Check for app drawer icon first
+        app_drawer_path = apps_dir / "app drawer.png"
+        app_drawer_img = None
+        if app_drawer_path.exists():
+            app_drawer_img = self._load_cached_rgba(app_drawer_path)
+        
+        # Get all image files from apps folder (excluding app drawer)
         app_files = []
         supported_extensions = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         for f in apps_dir.iterdir():
-            if f.is_file() and f.suffix.lower() in supported_extensions:
+            if f.is_file() and f.suffix.lower() in supported_extensions and f.name.lower() != "app drawer.png":
                 app_files.append(f)
         
-        # Select 5 random images (or fewer if not enough)
-        num_to_select = min(5, len(app_files))
+        # Select remaining 4 random images (or fewer if not enough)
+        num_to_select = min(4, len(app_files))
         if num_to_select > 0:
             selected = random.sample(app_files, num_to_select)
             self._app_images = []
+            # Always put app drawer first if it exists
+            if app_drawer_img:
+                self._app_images.append(app_drawer_img)
             for f in selected:
                 img = self._load_cached_rgba(f)
                 if img:
                     self._app_images.append(img)
         else:
-            self._app_images = []
+            # No other images, just use app drawer if it exists
+            self._app_images = [app_drawer_img] if app_drawer_img else []
         
         self._app_images_loaded = True
         self._static_cache_dirty = True
@@ -2174,6 +2466,8 @@ class Renderer:
     def _invalidate_static_cache(self):
         """Mark static cache as dirty so it rebuilds next render."""
         self._static_cache_dirty = True
+        self._cached_clean_content = None
+        self._cached_clean_content_size = None
     
     def _draw_border(self, img: Image.Image, rect: Tuple[int, int, int, int], color: Tuple[int, int, int, int], thickness: int = 3):
         """Draw a colored border rectangle on the image."""
@@ -2357,8 +2651,102 @@ class Renderer:
                 overshoot = elapsed - (frames_to_advance * duration)
                 self._last_game_update[idx] = now - (overshoot / 1000)
     
+    def get_background_image(self, canvas_size: tuple[int, int]) -> Image.Image:
+        """Get just the background image fitted to canvas (not scaled with zoom)."""
+        canvas_w, canvas_h = canvas_size
+        
+        if self.bezel_img is None:
+            return Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+        
+        # Scale device to fit within canvas minus padding
+        scale = min(
+            (canvas_w - 2 * self.DEVICE_PADDING) / self.bezel_img.width,
+            (canvas_h - 2 * self.DEVICE_PADDING) / self.bezel_img.height
+        )
+        device_w = round(self.bezel_img.width * scale)
+        device_h = round(self.bezel_img.height * scale)
+        device_x = self.DEVICE_PADDING + (canvas_w - 2 * self.DEVICE_PADDING - device_w) // 2
+        device_y = self.DEVICE_PADDING + (canvas_h - 2 * self.DEVICE_PADDING - device_h) // 2
+        
+        # Create base and fit background
+        base = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+        self._fit_background(base, self.bg_img, (canvas_w, canvas_h), (device_x, device_y, device_w, device_h))
+        return base
+    
+    def _update_handle_positions(self, canvas_size: tuple[int, int]):
+        """Update handle positions for click detection without rendering.
+        
+        This is called when using cached content to ensure handle positions
+        are available for click detection.
+        """
+        if not self.bezel_edit_mode or not self.bezel_img:
+            self._screen_handles = {'main': [], 'external': []}
+            return
+            
+        canvas_w, canvas_h = canvas_size
+        
+        # Calculate scale and positions
+        scale = min(
+            (canvas_w - 2 * self.DEVICE_PADDING) / self.bezel_img.width,
+            (canvas_h - 2 * self.DEVICE_PADDING) / self.bezel_img.height
+        )
+        self._bezel_fit_scale = scale
+        device_w = round(self.bezel_img.width * scale)
+        device_h = round(self.bezel_img.height * scale)
+        device_x = self.DEVICE_PADDING + (canvas_w - 2 * self.DEVICE_PADDING - device_w) // 2
+        device_y = self.DEVICE_PADDING + (canvas_h - 2 * self.DEVICE_PADDING - device_h) // 2
+        
+        main_screen = self.screen_manager.main
+        external_screen = self.screen_manager.external
+        
+        # Main screen handles
+        main_rect = (
+            device_x + round(main_screen.x * scale),
+            device_y + round(main_screen.y * scale),
+            round(main_screen.w * scale),
+            round(main_screen.h * scale)
+        )
+        mx, my, mw, mh = main_rect
+        show_main_handles = self.screen_manager.screen_mode != "single"
+        
+        if mw > 0 and mh > 0 and show_main_handles:
+            self._screen_handles = {
+                'main': [
+                    ('tl', mx, my),
+                    ('tr', mx + mw, my),
+                    ('bl', mx, my + mh),
+                    ('br', mx + mw, my + mh),
+                    ('top', mx + mw//2, my),
+                    ('bottom', mx + mw//2, my + mh),
+                    ('left', mx, my + mh//2),
+                    ('right', mx + mw, my + mh//2),
+                ],
+                'external': []
+            }
+        else:
+            self._screen_handles = {'main': [], 'external': []}
+        
+        # External screen handles
+        ext_rect = (
+            device_x + round(external_screen.x * scale),
+            device_y + round(external_screen.y * scale),
+            round(external_screen.w * scale),
+            round(external_screen.h * scale)
+        )
+        ex, ey, ew, eh = ext_rect
+        self._screen_handles['external'] = [
+            ('tl', ex, ey),
+            ('tr', ex + ew, ey),
+            ('bl', ex, ey + eh),
+            ('br', ex + ew, ey + eh),
+            ('top', ex + ew//2, ey),
+            ('bottom', ex + ew//2, ey + eh),
+            ('left', ex, ey + eh//2),
+            ('right', ex + ew, ey + eh//2),
+        ]
+    
     # Rendering
-    def composite(self, canvas_size: tuple[int, int], skip_background: bool = False) -> Image.Image:
+    def composite(self, canvas_size: tuple[int, int], skip_background: bool = False, skip_magnify: bool = False, skip_handles: bool = False, skip_borders: bool = False) -> Image.Image:
         canvas_w, canvas_h = canvas_size
 
         # Always compare with last static cache size
@@ -2370,6 +2758,23 @@ class Renderer:
 
         # Update last canvas size for animation tracking
         self._last_canvas_size = canvas_size
+        
+        # Set magnify skip flag for this render
+        self._skip_magnify_render = skip_magnify
+
+        # Check for cached clean content (used by magnify window)
+        # Clean content = content without borders/handles, so it can be reused
+        # Only use cache if skip_background is also True (we need background for magnify)
+        wants_clean = skip_borders and skip_handles
+        if wants_clean and skip_background and self._cached_clean_content is not None and self._cached_clean_content_size == canvas_size:
+            # Still need to update handle positions for click detection even when using cached content
+            self._update_handle_positions(canvas_size)
+            return self._cached_clean_content.copy()
+        
+        # Always update handle positions when in bezel edit mode (needed for click detection)
+        # even when skipping borders/handles for rendering
+        if self.bezel_edit_mode and wants_clean:
+            self._update_handle_positions(canvas_size)
 
         # Build static cache if needed
         if self._static_cache_image is None or self._static_cache_dirty or self._static_cache_size != canvas_size:
@@ -2492,14 +2897,13 @@ class Renderer:
                 )
                 
                 # Draw cyan border around main screen (5px thick)
-                self._draw_border(base, main_rect, (0, 255, 255, 255), 5)
-                # Draw yellow border around external screen
-                self._draw_border(base, ext_rect, (255, 255, 0, 255), 5)
-                # Draw magenta border around grid
-                self._draw_border(base, grid_rect, (255, 0, 255, 255), 3)
+                if not skip_borders:
+                    self._draw_border(base, main_rect, (0, 255, 255, 255), 5)
+                    # Draw yellow border around external screen
+                    self._draw_border(base, ext_rect, (255, 255, 0, 255), 5)
                 
                 # Draw drag handles - corners and edges
-                if self.debug_drag_mode:
+                if self.debug_drag_mode and not skip_handles:
                     # Main screen (cyan) - corners and edges
                     mx, my, mw, mh = main_rect
                     for hx in [mx, mx + mw]:
@@ -2527,33 +2931,56 @@ class Renderer:
 
         # Grid placement (squared & centered)
         # get_grid_rect returns position relative to frame, need to add device offset
+        main_screen = self.screen_manager.main
+        external_screen = self.screen_manager.external
         grid_rect_raw = external_screen.get_grid_rect(scale)
+        
+        # Check if we're in single screen stacked mode (top screen visible)
+        # This is when user has 1 screen selected AND stacked mode is enabled
+        is_single_stacked = (self._display_mode == "single" and self._single_screen_stacked)
+        
+        # Check for manual grid adjustment from handles
+        has_manual_grid = (hasattr(self, '_manual_grid_override') and 
+                          self._manual_grid_override and 
+                          is_single_stacked)
+        
+        # Default grid position from get_grid_rect (includes padding)
         grid_x = device_x + grid_rect_raw[0]
         grid_y = device_y + grid_rect_raw[1]
         grid_w, grid_h = grid_rect_raw[2], grid_rect_raw[3]
         
-        # In single screen mode, shift grid down if main screen overlaps (squish effect)
-        if self.screen_manager.screen_mode == "single":
-            main_screen_bottom = device_y + round(main_screen.y * scale) + round(main_screen.h * scale)
-            if main_screen_bottom > grid_y:
-                overlap = main_screen_bottom - grid_y
-                # Calculate the maximum allowed bottom of grid (bottom of screen minus bottom padding)
-                ext_screen_bottom = device_y + round(external_screen.y * scale) + round(external_screen.h * scale)
-                bottom_padding_scaled = round(Screen.BOTTOM_SCREEN_BOTTOM_PADDING * scale)
-                max_grid_bottom = ext_screen_bottom - bottom_padding_scaled
-                
-                # Shrink grid height by overlap amount
-                grid_h = grid_h - overlap
-                grid_h = max(grid_h, 50)  # minimum height
-                
-                # Position grid so bottom edge stays at max_grid_bottom
-                grid_y = max_grid_bottom - grid_h
+        if has_manual_grid:
+            # Use manually adjusted grid values from handles
+            grid_x = self._last_grid_x
+            grid_y = self._last_grid_y
+            grid_w = self._last_grid_w
+            grid_h = self._last_grid_h
+        elif is_single_stacked:
+            # Single screen stacked mode - use scalable lookup table
+            # Scale factor determines what portion of full grid area to use
+            rows = self.GRID_ROWS
+            lookup = self._stacked_lookup.get(rows, {})
+            scale_factor = lookup.get("scale_factor", 0.35)
+            
+            # Calculate target height as portion of available grid area
+            original_h = grid_rect_raw[3]
+            target_h = int(original_h * scale_factor)
+            target_h = max(target_h, 50)
+            
+            # Anchor at bottom - move grid down by the difference
+            shrink = original_h - target_h
+            grid_y = grid_y + shrink
+            grid_h = target_h
 
         # Store grid dimensions for zoom animation calculations
         self._last_grid_w = grid_w
         self._last_grid_h = grid_h
         self._last_grid_x = grid_x
         self._last_grid_y = grid_y
+        
+        # Clear grid handles when not in bezel edit mode
+        if not self.bezel_edit_mode:
+            self._grid_handles = []
 
         # Update zoom animation
         if self._zoom_anim_start is not None:
@@ -3247,7 +3674,7 @@ class Renderer:
                                 base.alpha_composite(resized, (paste_x, paste_y))
                                 
         # UI Elements - render based on screen mode
-        self._render_ui_elements(base, canvas_w, canvas_h, device_x, device_y, scale)
+        self._render_ui_elements(base, canvas_w, canvas_h, device_x, device_y, scale, skip_borders)
 
         # Frame - skip if hidden, or make semi-transparent if debug or bezel edit mode
         if not self.frame_hidden:
@@ -3269,6 +3696,9 @@ class Renderer:
         # Draw handles on top of everything (in bezel edit mode)
         if self.bezel_edit_mode:
             # Recalculate screen positions for handles at the end
+            main_screen = self.screen_manager.main
+            external_screen = self.screen_manager.external
+            
             main_rect = (
                 device_x + round(main_screen.x * scale),
                 device_y + round(main_screen.y * scale),
@@ -3283,13 +3713,14 @@ class Renderer:
             )
             
             # Draw screen borders on top of everything
-            if self.screen_manager.screen_mode == "dual":
-                self._draw_border(base, main_rect, (255, 165, 0, 255), 3)
-            
-            self._draw_border(base, ext_rect, (50, 205, 50, 255), 3)
+            if not skip_borders:
+                if self.screen_manager.screen_mode == "dual":
+                    self._draw_border(base, main_rect, (255, 165, 0, 255), 3)
+                
+                self._draw_border(base, ext_rect, (50, 205, 50, 255), 3)
             
             # Draw app grid handles (red) - but not in magnify window area
-            if hasattr(self, '_app_grid_debug') and self._app_grid_debug:
+            if not skip_handles and hasattr(self, '_app_grid_debug') and self._app_grid_debug:
                 grid_left = self._app_grid_debug.get('grid_left')
                 grid_right = self._app_grid_debug.get('grid_right')
                 grid_top = self._app_grid_debug.get('grid_top')
@@ -3304,21 +3735,49 @@ class Renderer:
                     if not (grid_left < mag_x + mag_size and grid_right > mag_x and 
                             grid_top < mag_y + mag_size and grid_bottom > mag_y):
                         self._render_drag_handles(base, grid_left, grid_right, grid_top, grid_bottom)
+        
+        # Draw screen handles in bezel edit mode
+        if self.bezel_edit_mode and not skip_handles:
+            # Only show main screen handles if NOT in single screen mode
+            show_main_handles = self.screen_manager.screen_mode != "single"
             
-            # Draw main screen handles (orange) in dual mode
-            if self.screen_manager.screen_mode == "dual":
-                mx, my, mw, mh = main_rect
-                if mw > 0 and mh > 0:
-                    for hx in [mx, mx + mw]:
-                        for hy in [my, my + mh]:
-                            self._draw_handle(base, hx, hy, (255, 165, 0, 255), 6)
-                    self._draw_handle(base, mx + mw//2, my, (255, 165, 0, 255), 6)
-                    self._draw_handle(base, mx + mw//2, my + mh, (255, 165, 0, 255), 6)
-                    self._draw_handle(base, mx, my + mh//2, (255, 165, 0, 255), 6)
-                    self._draw_handle(base, mx + mw, my + mh//2, (255, 165, 0, 255), 6)
+            mx, my, mw, mh = main_rect
+            if mw > 0 and mh > 0 and show_main_handles:
+                self._screen_handles = {
+                    'main': [
+                        ('tl', mx, my),
+                        ('tr', mx + mw, my),
+                        ('bl', mx, my + mh),
+                        ('br', mx + mw, my + mh),
+                        ('top', mx + mw//2, my),
+                        ('bottom', mx + mw//2, my + mh),
+                        ('left', mx, my + mh//2),
+                        ('right', mx + mw, my + mh//2),
+                    ],
+                    'external': []
+                }
+                for hx in [mx, mx + mw]:
+                    for hy in [my, my + mh]:
+                        self._draw_handle(base, hx, hy, (255, 165, 0, 255), 6)
+                self._draw_handle(base, mx + mw//2, my, (255, 165, 0, 255), 6)
+                self._draw_handle(base, mx + mw//2, my + mh, (255, 165, 0, 255), 6)
+                self._draw_handle(base, mx, my + mh//2, (255, 165, 0, 255), 6)
+                self._draw_handle(base, mx + mw, my + mh//2, (255, 165, 0, 255), 6)
+            else:
+                self._screen_handles = {'main': [], 'external': []}
             
             # Draw external screen handles (lime green)
             ex, ey, ew, eh = ext_rect
+            self._screen_handles['external'] = [
+                ('tl', ex, ey),
+                ('tr', ex + ew, ey),
+                ('bl', ex, ey + eh),
+                ('br', ex + ew, ey + eh),
+                ('top', ex + ew//2, ey),
+                ('bottom', ex + ew//2, ey + eh),
+                ('left', ex, ey + eh//2),
+                ('right', ex + ew, ey + eh//2),
+            ]
             for hx in [ex, ex + ew]:
                 for hy in [ey, ey + eh]:
                     self._draw_handle(base, hx, hy, (50, 205, 50, 255), 6)
@@ -3326,5 +3785,102 @@ class Renderer:
             self._draw_handle(base, ex + ew//2, ey + eh, (50, 205, 50, 255), 6)
             self._draw_handle(base, ex, ey + eh//2, (50, 205, 50, 255), 6)
             self._draw_handle(base, ex + ew, ey + eh//2, (50, 205, 50, 255), 6)
+        
+        # Cache clean content (without borders/handles) for magnify window
+        if wants_clean:
+            self._cached_clean_content = base.copy()
+            self._cached_clean_content_size = canvas_size
+        
+        return base
+    
+    def draw_overlays(self, base: Image.Image, canvas_size: tuple[int, int]) -> Image.Image:
+        """Draw borders and handles on top of existing content image.
+        
+        This is used to add overlays to cached clean content for canvas display,
+        avoiding the need to render the entire scene twice.
+        
+        Args:
+            base: The base image (typically cached clean content) to draw overlays on
+            canvas_size: The canvas dimensions (width, height)
+            
+        Returns:
+            Image with overlays drawn on top
+        """
+        if not self.bezel_edit_mode:
+            return base
+            
+        canvas_w, canvas_h = canvas_size
+        
+        # Recalculate scale and positions (needed for overlay positions)
+        if not self.bezel_img:
+            return base
+            
+        scale = min(
+            (canvas_w - 2 * self.DEVICE_PADDING) / self.bezel_img.width,
+            (canvas_h - 2 * self.DEVICE_PADDING) / self.bezel_img.height
+        )
+        device_w = round(self.bezel_img.width * scale)
+        device_h = round(self.bezel_img.height * scale)
+        device_x = self.DEVICE_PADDING + (canvas_w - 2 * self.DEVICE_PADDING - device_w) // 2
+        device_y = self.DEVICE_PADDING + (canvas_h - 2 * self.DEVICE_PADDING - device_h) // 2
+        
+        main_screen = self.screen_manager.main
+        external_screen = self.screen_manager.external
+        
+        # Calculate screen rectangles
+        main_rect = (
+            device_x + round(main_screen.x * scale),
+            device_y + round(main_screen.y * scale),
+            round(main_screen.w * scale),
+            round(main_screen.h * scale)
+        )
+        ext_rect = (
+            device_x + round(external_screen.x * scale),
+            device_y + round(external_screen.y * scale),
+            round(external_screen.w * scale),
+            round(external_screen.h * scale)
+        )
+        
+        # Draw screen borders
+        if self.screen_manager.screen_mode == "dual":
+            self._draw_border(base, main_rect, (255, 165, 0, 255), 3)
+        self._draw_border(base, ext_rect, (50, 205, 50, 255), 3)
+        
+        # Draw app grid handles
+        if hasattr(self, '_app_grid_debug') and self._app_grid_debug:
+            grid_left = self._app_grid_debug.get('grid_left')
+            grid_right = self._app_grid_debug.get('grid_right')
+            grid_top = self._app_grid_debug.get('grid_top')
+            grid_bottom = self._app_grid_debug.get('grid_bottom')
+            if grid_left is not None:
+                mag_size = self.magnify_size
+                mag_margin = 20
+                mag_x = canvas_w - mag_size - mag_margin
+                mag_y = canvas_h - mag_size - mag_margin
+                if not (grid_left < mag_x + mag_size and grid_right > mag_x and 
+                        grid_top < mag_y + mag_size and grid_bottom > mag_y):
+                    self._render_drag_handles(base, grid_left, grid_right, grid_top, grid_bottom)
+        
+        # Draw screen handles
+        show_main_handles = self.screen_manager.screen_mode != "single"
+        mx, my, mw, mh = main_rect
+        if mw > 0 and mh > 0 and show_main_handles:
+            for hx in [mx, mx + mw]:
+                for hy in [my, my + mh]:
+                    self._draw_handle(base, hx, hy, (255, 165, 0, 255), 6)
+            self._draw_handle(base, mx + mw//2, my, (255, 165, 0, 255), 6)
+            self._draw_handle(base, mx + mw//2, my + mh, (255, 165, 0, 255), 6)
+            self._draw_handle(base, mx, my + mh//2, (255, 165, 0, 255), 6)
+            self._draw_handle(base, mx + mw, my + mh//2, (255, 165, 0, 255), 6)
+        
+        # Draw external screen handles
+        ex, ey, ew, eh = ext_rect
+        for hx in [ex, ex + ew]:
+            for hy in [ey, ey + eh]:
+                self._draw_handle(base, hx, hy, (50, 205, 50, 255), 6)
+        self._draw_handle(base, ex + ew//2, ey, (50, 205, 50, 255), 6)
+        self._draw_handle(base, ex + ew//2, ey + eh, (50, 205, 50, 255), 6)
+        self._draw_handle(base, ex, ey + eh//2, (50, 205, 50, 255), 6)
+        self._draw_handle(base, ex + ew, ey + eh//2, (50, 205, 50, 255), 6)
         
         return base

@@ -6,7 +6,12 @@ class Screen:
     FRAME_WIDTH = 878
     FRAME_HEIGHT = 1043
 
-    # Dual screen mode positions (Thor/Aynthor)
+    # Default positions as percentages (x, y, w, h) - relative to frame dimensions
+    TOP_SCREEN_PCT = (0.05, 0.025, 0.9, 0.425)  # ~ (44, 26, 790, 444) at 878x1043
+    BOTTOM_SCREEN_PCT = (0.249, 0.566, 0.502, 0.361)  # ~ (219, 590, 441, 377) at 878x1043
+    SINGLE_SCREEN_PCT = (0.394, 0.059, 0.935, 0.557)  # ~ (346, 62, 1032, 581) at 878x1043
+    
+    # Dual screen mode positions (Thor/Aynthor) - computed from percentages
     TOP_SCREEN = (44, 26, 790, 444)  # +1 pixel to left to fill gap
     BOTTOM_SCREEN = (219, 590, 441, 377)  # +1 height to fill gap
     
@@ -16,6 +21,44 @@ class Screen:
     BOTTOM_SCREEN_UI_OFFSET = 40
     BOTTOM_SCREEN_TOP_PADDING = 20
     BOTTOM_SCREEN_BOTTOM_PADDING = 50
+    
+    # Percentage-based offsets (for scaling across different screen sizes)
+    # Calculated from reference: external.h = 581 (Odin)
+    BOTTOM_SCREEN_TOP_PADDING_PCT = 0.034  # 20/581
+    BOTTOM_SCREEN_BOTTOM_PADDING_PCT = 0.086  # 50/581
+    
+    @classmethod
+    def set_frame_dimensions(cls, width: int, height: int):
+        """Set frame dimensions and compute pixel positions from percentages."""
+        cls.FRAME_WIDTH = width
+        cls.FRAME_HEIGHT = height
+        cls.TOP_SCREEN = cls.percentages_to_pixels(cls.TOP_SCREEN_PCT)
+        cls.BOTTOM_SCREEN = cls.percentages_to_pixels(cls.BOTTOM_SCREEN_PCT)
+        cls.SINGLE_SCREEN = cls.percentages_to_pixels(cls.SINGLE_SCREEN_PCT)
+    
+    @classmethod
+    def percentages_to_pixels(cls, pct: Tuple[float, float, float, float]) -> Tuple[int, int, int, int]:
+        """Convert percentage values (0.0-1.0) to pixel coordinates."""
+        px, py, pw, ph = pct
+        return (
+            round(px * cls.FRAME_WIDTH),
+            round(py * cls.FRAME_HEIGHT),
+            round(pw * cls.FRAME_WIDTH),
+            round(ph * cls.FRAME_HEIGHT)
+        )
+    
+    @classmethod
+    def pixels_to_percentages(cls, rect: Tuple[int, int, int, int]) -> Tuple[float, float, float, float]:
+        """Convert pixel coordinates to percentage values (0.0-1.0)."""
+        x, y, w, h = rect
+        if cls.FRAME_WIDTH == 0 or cls.FRAME_HEIGHT == 0:
+            return (0, 0, 0, 0)
+        return (
+            x / cls.FRAME_WIDTH,
+            y / cls.FRAME_HEIGHT,
+            w / cls.FRAME_WIDTH,
+            h / cls.FRAME_HEIGHT
+        )
     
     @classmethod
     def get_default_screen_rect(cls, screen_type: str) -> Tuple[int, int, int, int]:
@@ -126,8 +169,9 @@ class ExternalScreen(Screen):
         self.ui_height = height
     
     def get_grid_rect(self, scale: float = 1.0) -> Tuple[int, int, int, int]:
-        padding_top = Screen.BOTTOM_SCREEN_TOP_PADDING
-        padding_bottom = Screen.BOTTOM_SCREEN_BOTTOM_PADDING
+        # Use percentage of screen height for scalable padding
+        padding_top = self.h * Screen.BOTTOM_SCREEN_TOP_PADDING_PCT
+        padding_bottom = self.h * Screen.BOTTOM_SCREEN_BOTTOM_PADDING_PCT
         scaled_x = round(self.x * scale)
         scaled_y = round(self.y * scale) + round(padding_top * scale)
         scaled_w = round(self.w * scale)

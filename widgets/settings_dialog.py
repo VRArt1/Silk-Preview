@@ -9,27 +9,72 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(parent)
         self.app = app
         self.title("Settings")
-        self.geometry("450x500")
-        self.resizable(False, False)
+        self.geometry("420x550")
+        self.resizable(True, True)
+        
+        # Set window icon
+        icon_path = Path(__file__).parent.parent / "assets" / "favicon_settings.png"
+        if icon_path.exists():
+            try:
+                icon_img = Image.open(icon_path)
+                if icon_img.mode != 'RGBA':
+                    icon_img = icon_img.convert('RGBA')
+                self._settings_icon = ImageTk.PhotoImage(icon_img)
+                self.iconphoto(False, self._settings_icon)
+            except Exception:
+                pass
         
         self.transient(parent)
         
         self._load_assets()
         
-        main_frame = ttk.Frame(self, padding="10")
-        main_frame.pack(fill="both", expand=True)
+        # Create canvas with scrollbar
+        canvas = tk.Canvas(self, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = ttk.Frame(canvas, padding="10")
         
-        top_frame = ttk.LabelFrame(main_frame, text="Appearance", padding="10")
+        def on_scroll(*args):
+            scrollbar.set(*args)
+            if float(args[0]) == 0.0 and float(args[1]) == 1.0:
+                scrollbar.pack_forget()
+            else:
+                scrollbar.pack(side="right", fill="y")
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=on_scroll)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        # Bind mouse wheel to scroll
+        def _on_mousewheel(event):
+            # Scroll only if not at top/bottom bounds
+            current = canvas.yview()[0]
+            if event.delta > 0 and current > 0:
+                canvas.yview_scroll(-1, "units")
+            elif event.delta < 0 and current < 1:
+                canvas.yview_scroll(1, "units")
+        
+        self.bind("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        
+        # Use scrollable_frame as parent for all widgets
+        top_frame = ttk.LabelFrame(self.scrollable_frame, text="Appearance", padding="10")
         top_frame.pack(fill="x", pady=(0, 10))
         
         accent_frame = ttk.Frame(top_frame)
-        accent_frame.pack(fill="x", pady=(0, 8))
+        accent_frame.pack(fill="x", pady=(0, 5))
         ttk.Label(accent_frame, text="Accent Color:").pack(side="left")
-        self.accent_colors_frame = ttk.Frame(accent_frame)
-        self.accent_colors_frame.pack(side="left", padx=(10, 0))
+        self.accent_colors_frame = tk.Frame(accent_frame, bg=self._get_bg_color())
+        self.accent_colors_frame.pack(side="left", padx=(10, 0), fill="x", expand=True)
+        self._build_accent_color_picker()
         
         dock_apps_frame = ttk.Frame(top_frame)
-        dock_apps_frame.pack(fill="x", pady=(5, 0))
+        dock_apps_frame.pack(fill="x", pady=(0, 5))
         
         dock_frame = ttk.Frame(dock_apps_frame)
         dock_frame.pack(side="left", fill="x", expand=True)
@@ -43,7 +88,7 @@ class SettingsDialog(tk.Toplevel):
         dock_check.pack(anchor="w")
         
         scale_frame = ttk.Frame(top_frame)
-        scale_frame.pack(fill="x")
+        scale_frame.pack(fill="x", pady=(0, 5))
         ttk.Label(scale_frame, text="Logo Size:").pack(side="left")
         self.scale_var = tk.IntVar(value=app._icon_scale_var.get())
         self.scale_slider = ttk.Scale(
@@ -80,9 +125,9 @@ class SettingsDialog(tk.Toplevel):
             variable=self.single_screen_var,
             command=self._on_single_screen_change
         )
-        single_check.pack(anchor="w")
+        single_check.pack(anchor="w", pady=(0, 5))
         
-        options_frame = ttk.LabelFrame(main_frame, text="Options", padding="10")
+        options_frame = ttk.LabelFrame(self.scrollable_frame, text="Options", padding="10")
         options_frame.pack(fill="x", pady=(0, 10))
         
         self.populated_apps_var = tk.BooleanVar(value=getattr(app, 'populated_apps_visible', True))
@@ -121,34 +166,51 @@ class SettingsDialog(tk.Toplevel):
         )
         remember_check.pack(anchor="w")
         
-        bezel_edit_frame = ttk.LabelFrame(main_frame, text="Bezel Edit Mode", padding="10")
-        bezel_edit_frame.pack(fill="x", pady=(0, 10))
+        bg_frame = ttk.LabelFrame(self.scrollable_frame, text="UI", padding="10")
+        bg_frame.pack(fill="x", pady=(0, 10))
         
-        magnify_frame = ttk.Frame(bezel_edit_frame)
-        magnify_frame.pack(fill="x")
-        ttk.Label(magnify_frame, text="Magnify Size:").pack(side="left")
-        self.magnify_size_var = tk.IntVar(value=getattr(app.renderer, 'magnify_size', 200))
-        self.magnify_size_slider = ttk.Scale(
-            magnify_frame,
-            from_=100,
-            to=300,
+        bg_scroll_frame = ttk.Frame(bg_frame)
+        bg_scroll_frame.pack(fill="x")
+        ttk.Label(bg_scroll_frame, text="Scroll Speed:").pack(side="left")
+        self.bg_scroll_speed_var = tk.IntVar(value=getattr(app, 'bg_scroll_speed', 1))
+        bg_scroll_slider = ttk.Scale(
+            bg_scroll_frame,
+            from_=0,
+            to=10,
             orient="horizontal",
-            variable=self.magnify_size_var,
-            command=self._on_magnify_size_change
+            variable=self.bg_scroll_speed_var,
+            command=self._on_bg_scroll_speed_change
         )
-        self.magnify_size_slider.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        bg_scroll_slider.pack(side="left", fill="x", expand=True, padx=(5, 0))
         
-        self.magnify_size_label = ttk.Label(magnify_frame, text=f"{self.magnify_size_var.get()}%")
-        self.magnify_size_label.pack(side="left", padx=(5, 0))
+        self.bg_scroll_speed_label = ttk.Label(bg_scroll_frame, text=f"{self.bg_scroll_speed_var.get()}")
+        self.bg_scroll_speed_label.pack(side="left", padx=(5, 0))
         
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill="x")
-        close_btn = ttk.Button(button_frame, text="Close", command=self.destroy)
-        close_btn.pack(side="right")
+        self.reverse_direction_var = tk.BooleanVar(value=getattr(app, 'reverse_direction', False))
+        reverse_direction_check = ttk.Checkbutton(
+            bg_frame,
+            text="Reverse Direction",
+            variable=self.reverse_direction_var,
+            command=self._on_reverse_direction_change
+        )
+        reverse_direction_check.pack(anchor="w", pady=(5, 0))
         
-        self._build_accent_color_picker()
+        folders_frame = ttk.LabelFrame(self.scrollable_frame, text="Folders", padding="10")
+        folders_frame.pack(fill="x", pady=(0, 0))
+        
+        assets_btn = ttk.Button(folders_frame, text="Open Assets Folder", command=self._open_assets_folder)
+        assets_btn.pack(fill="x", pady=(0, 5))
+        
+        screenshots_btn = ttk.Button(folders_frame, text="Open Screenshots Folder", command=self._open_screenshots_folder)
+        screenshots_btn.pack(fill="x")
         
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+    
+    def _get_bg_color(self):
+        try:
+            return self.cget("bg")
+        except:
+            return "#f0f0f0"
     
     def _load_assets(self):
         assets_dir = Path(__file__).parent.parent / "assets"
@@ -224,20 +286,23 @@ class SettingsDialog(tk.Toplevel):
     def _build_accent_color_picker(self):
         self._accent_color_refs = {}
         circle_size = 24
+        bg_color = self._get_bg_color()
         
+        # Use grid to space colors evenly across the row
         for i, color_name in enumerate(self.app.folder_colors):
             is_selected = self.app.default_folder_color_var.get() == color_name
             
             tk_img = self._build_folder_color_circle(color_name, circle_size, darken=is_selected, is_selected=is_selected)
             if tk_img:
-                frame = ttk.Frame(self.accent_colors_frame)
-                frame.pack(side="left", padx=2)
-                
-                label = ttk.Label(frame, image=tk_img)
-                label.pack()
+                label = tk.Label(self.accent_colors_frame, image=tk_img, bg=bg_color)
+                label.grid(row=0, column=i, padx=4, sticky="ew")
                 label.bind("<Button-1>", lambda e, c=color_name: self._on_accent_color_click(c))
                 
                 self._accent_color_refs[color_name] = tk_img
+        
+        # Configure columns to expand evenly
+        num_colors = len(self.app.folder_colors)
+        self.accent_colors_frame.columnconfigure(tuple(range(num_colors)), weight=1, uniform="color")
     
     def _rebuild_accent_color_picker(self):
         for widget in self.accent_colors_frame.winfo_children():
@@ -328,23 +393,30 @@ class SettingsDialog(tk.Toplevel):
         self.app.remember_var.set(self.remember_var.get())
         self.app.toggle_remember_last_theme()
     
-    def _on_magnify_size_change(self, value):
-        size = int(float(value))
-        size = round(size / 10) * 10  # Snap to 10 increments
-        size = max(100, min(300, size))
-        self.magnify_size_var.set(size)
-        self.app.magnify_size = size
-        self.app.renderer.magnify_size = size
-        self.app.renderer.magnify_zoom = 2.0 * (size / 150)  # Scale zoom with size
-        self.magnify_size_label.config(text=f"{size}%")
+    def _on_bg_scroll_speed_change(self, value):
+        speed = int(float(value))
+        self.bg_scroll_speed_var.set(speed)
+        self.app.bg_scroll_speed = speed
+        self.bg_scroll_speed_label.config(text=f"{speed}")
         
         if "Settings" not in self.app.config:
             self.app.config["Settings"] = {}
-        self.app.config["Settings"]["magnify_size"] = str(size)
+        self.app.config["Settings"]["bg_scroll_speed"] = str(speed)
         with open(self.app.settings_path, "w") as f:
             self.app.config.write(f)
         
-        self.app.redraw()
+        self.app._update_bg_scroll()
+    
+    def _on_reverse_direction_change(self):
+        self.app.reverse_direction = self.reverse_direction_var.get()
+        
+        if "Settings" not in self.app.config:
+            self.app.config["Settings"] = {}
+        self.app.config["Settings"]["reverse_direction"] = str(self.reverse_direction_var.get())
+        with open(self.app.settings_path, "w") as f:
+            self.app.config.write(f)
+        
+        self.app._update_bg_scroll()
     
     def update_from_app(self):
         self.corner_hints_var.set(self.app.corner_hints_var.get())
@@ -356,6 +428,18 @@ class SettingsDialog(tk.Toplevel):
         self.scale_var.set(self.app._icon_scale_var.get())
         self.scale_display.config(text=f"{self.scale_var.get()}%")
         self.remember_var.set(self.app.remember_var.get())
-        self.magnify_size_var.set(getattr(self.app.renderer, 'magnify_size', 200))
-        self.magnify_size_label.config(text=f"{self.magnify_size_var.get()}")
+        self.bg_scroll_speed_var.set(getattr(self.app, 'bg_scroll_speed', 1))
+        self.bg_scroll_speed_label.config(text=f"{self.app.bg_scroll_speed}")
+        self.reverse_direction_var.set(getattr(self.app, 'reverse_direction', False))
         self._rebuild_accent_color_picker()
+    
+    def _open_assets_folder(self):
+        import os
+        assets_dir = Path(__file__).parent.parent / "assets"
+        os.startfile(assets_dir)
+    
+    def _open_screenshots_folder(self):
+        import os
+        screenshots_dir = Path(__file__).parent.parent / "screenshots"
+        screenshots_dir.mkdir(exist_ok=True)
+        os.startfile(screenshots_dir)

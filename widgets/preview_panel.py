@@ -101,6 +101,25 @@ class PreviewPanel(ttk.Frame):
         widget.bind_all("<Button-5>", lambda e: self._on_mousewheel(e, widget))
 
     def _on_mousewheel(self, event, widget):
+        # Check if mouse is over this widget before scrolling
+        widget_id = widget.winfo_id()
+        try:
+            # Get the widget at the mouse position
+            x, y = event.x_root, event.y_root
+            widget_at_pos = event.widget.winfo_containing(x, y)
+            
+            # Check if the widget at position is this canvas or a child of it
+            current = widget_at_pos
+            while current is not None:
+                if current == widget:
+                    break
+                current = current.master
+            else:
+                # Mouse is not over this widget, ignore the scroll
+                return
+        except:
+            return
+        
         # Get current scroll position
         scroll_pos = widget.yview()
         
