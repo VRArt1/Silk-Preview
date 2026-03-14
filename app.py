@@ -404,7 +404,8 @@ class App(TkinterDnD.Tk):
         # Canvas and keyboard binds
         # ----------------------------
         self.canvas.bind("<Configure>", self._on_canvas_resize)
-
+        self.canvas.bind("<ButtonRelease-1>", self._on_canvas_resize_complete)
+        
         self.canvas.bind("<Button-1>", self.on_canvas_left_click)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
         self.canvas.bind("<Motion>", self._on_canvas_motion)  # Track mouse position for magnify window
@@ -441,11 +442,14 @@ class App(TkinterDnD.Tk):
     # Canvas resize
     # ----------------------------
     def _on_canvas_resize(self, event):
-        """Canvas configure event - schedule redraw."""
+        """Canvas configure event - redraw on resize."""
         w, h = event.width, event.height
-        
         if w > 1 and h > 1:
-            self.after_idle(lambda: self._do_resize_with_size(w, h))
+            self._do_resize_with_size(w, h)
+    
+    def _on_canvas_resize_complete(self, event):
+        """Force final redraw when mouse is released after resize."""
+        self._do_resize_with_size(self.canvas.winfo_width(), self.canvas.winfo_height())
     
     def _do_resize_with_size(self, w, h):
         """Redraw with specific dimensions."""
@@ -635,43 +639,9 @@ class App(TkinterDnD.Tk):
         
         self.renderer.set_bezel(selection)
         
-        # Force redraw to populate correct grid dimensions in renderer
-        # (CRITICAL for proper spacing when switching bezels)
-        # Cancel any existing bg scroll timer
-        if hasattr(self, '_bg_scroll_timer') and self._bg_scroll_timer:
-            self.after_cancel(self._bg_scroll_timer)
-            self._bg_scroll_timer = None
-        
-        # Force size change to trigger full redraw (same as resize does)
-        self._last_canvas_size = None
-        
-        # Invalidate cache and reset animations (same as resize does)
-        self.renderer._invalidate_static_cache()
-        self.renderer._zoom_anim_start = None
-        self.renderer._zoom_anim_from = None
-        self.renderer._zoom_anim_to = None
-        self.renderer._selected_anim_x = None
-        self.renderer._selected_anim_y = None
-        self.renderer._selected_anim_w = None
-        self.renderer._selected_anim_h = None
-        self.renderer._sel_anim_from = None
-        self.renderer._sel_anim_to = None
-        self.renderer._sel_anim_start = None
-        
-        # Recalculate scroll position instantly
-        self._update_grid_scroll(instant=True)
-        if self.single_screen_stacked_mode:
-            rows = self.renderer.GRID_ROWS
-            self._apply_stacked_offset(rows)
-        
-        # Reset bg scroll offset for fresh start
-        self._bg_scroll_offset = 0.0
-        
-        # Full redraw
-        self.redraw()
-        
-        # Restart bg scroll animation
-        self._update_bg_scroll()
+        # This is a band aid solution to fixing the background scroll from freezing on bezel switching.
+        # If you can fix it please do <3
+        self._do_resize_with_size(self.canvas.winfo_width(), self.canvas.winfo_height())
         
         # Save the bezel selection to settings
         self.save_settings()
@@ -2390,6 +2360,16 @@ class App(TkinterDnD.Tk):
     # --- Grid index ---
     def get_grid_index_at(self, click_x, click_y):
         """Click detection - only works on visible items within grid bounds."""
+        # Account for canvas zoom - transform click from canvas coords to content coords
+        canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+        if canvas_zoom != 1.0:
+            canvas_w = self.canvas.winfo_width()
+            canvas_h = self.canvas.winfo_height()
+            center_x = canvas_w // 2
+            center_y = canvas_h // 2
+            click_x = (click_x - center_x) / canvas_zoom + center_x
+            click_y = (click_y - center_y) / canvas_zoom + center_y
+        
         if hasattr(self.renderer, 'grid_positions') and hasattr(self.renderer, 'grid_click_regions'):
             current_rows = self.renderer.GRID_ROWS
             visible_cols = self.renderer.GRID_COLS
