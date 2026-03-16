@@ -95,7 +95,8 @@ class Screen:
         self.wallpaper_frames: List[Image.Image] = []
         self.wallpaper_index = 0
         self.wallpaper_duration = 100
-
+        self.wallpaper_video_path: Optional[str] = None  # Path to video file if video wallpaper
+        
         self._percentages = self.get_screen_as_percentages((self.x, self.y, self.w, self.h))
 
     @property
@@ -136,9 +137,46 @@ class Screen:
             self.wallpaper = img
 
     def get_current_wallpaper(self) -> Optional[Image.Image]:
+        # Return None if video wallpaper is playing (rendered separately)
+        if self.wallpaper_is_video:
+            return None
         if self.wallpaper_frames:
             return self.wallpaper_frames[self.wallpaper_index]
         return self.wallpaper
+    
+    def set_current_video_frame(self, frame: Optional[Image.Image]):
+        """Store current video frame from PIL video player."""
+        self._current_video_frame = frame
+    
+    def clear_current_video_frame(self):
+        """Clear current video frame."""
+        self._current_video_frame = None
+    
+    @property
+    def wallpaper_is_video(self) -> bool:
+        """Check if wallpaper is a video file."""
+        return self.wallpaper_video_path is not None
+    
+    def set_wallpaper_video(self, video_path: str, first_frame: Optional[Image.Image]):
+        """Set wallpaper from video file (stores path, uses first frame as static preview)."""
+        self.wallpaper_video_path = video_path
+        # Use first frame as the static wallpaper preview
+        self.wallpaper = first_frame.convert("RGBA") if first_frame else None
+        self.wallpaper_frames = []  # No animation frames for video
+        self._current_video_frame = None  # Reset current video frame
+    
+    def clear_wallpaper_video(self):
+        """Clear video wallpaper data."""
+        self.wallpaper_video_path = None
+        self._current_video_frame = None
+    
+    def clear_wallpaper(self):
+        """Clear all wallpaper data."""
+        self.wallpaper = None
+        self.wallpaper_frames = []
+        self.wallpaper_index = 0
+        self.wallpaper_video_path = None
+        self._current_video_frame = None
 
     def advance_animation(self, dt: float) -> bool:
         if len(self.wallpaper_frames) > 1:

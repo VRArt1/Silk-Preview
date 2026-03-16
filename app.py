@@ -5,13 +5,14 @@ from tkinter import filedialog, StringVar
 from tkinter import PhotoImage
 from tkinter import ttk
 from pathlib import Path
-from PIL import ImageTk, Image, ImageEnhance
+from PIL import ImageTk, Image, ImageEnhance, ImageChops, ImageDraw
 import time
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 from renderer import Renderer
 from widgets.preview_panel import PreviewPanel
+from video_player import VideoPlayerManager
 
 
 class App(TkinterDnD.Tk):
@@ -255,6 +256,9 @@ class App(TkinterDnD.Tk):
         self.canvas = tk.Canvas(self.main_frame, bg="#202020", highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         
+        # Video player manager for video wallpapers (after canvas is created)
+        self.video_player_manager = VideoPlayerManager(self.canvas, self.renderer)
+        
         # Canvas Zoom buttons frame (separate from canvas so they aren't affected by zoom)
         self.canvas_zoom_frame = tk.Frame(self.main_frame, bg="#2a2a2a")
         self.canvas_zoom_frame.grid(row=0, column=0, sticky="sw", padx=10, pady=10)
@@ -282,10 +286,9 @@ class App(TkinterDnD.Tk):
         self.preview_panel = PreviewPanel(self.main_frame, renderer=self.renderer, width=300)
         self.preview_panel.grid(row=0, column=1, sticky="ns")
         
-        # Load initial theme now that preview panel exists
+        # Load initial theme using unified path (skip cleanup and save since no videos exist yet and controls not ready)
         if initial_theme_folder.exists():
-            self.renderer.load_theme(initial_theme_folder, max_grid_items=self.max_grid_slots)
-            self.preview_panel.refresh()
+            self._load_theme_from_path(initial_theme_folder, skip_cleanup=True, skip_save=True)
 
         # Controls
         self.controls = tk.Frame(self.main_frame)
@@ -296,8 +299,8 @@ class App(TkinterDnD.Tk):
         # ----------------------------
         self.bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
         
-        # Get saved bezel from config
-        saved_bezel = self.config.get("Settings", "bezel", fallback="")
+        # Get saved bezel from config (saved in Misc section)
+        saved_bezel = self.config.get("Misc", "bezel", fallback="")
         
         # Determine default bezel:
         # 1. If saved_bezel is valid, use it
@@ -476,6 +479,8 @@ class App(TkinterDnD.Tk):
                 if self.single_screen_stacked_mode:
                     rows = self.renderer.GRID_ROWS
                     self._apply_stacked_offset(rows)
+                # Update video player positions if any
+                self._update_video_positions()
                 self.redraw()
 
     def cycle_bezel(self, event):
@@ -599,7 +604,72 @@ class App(TkinterDnD.Tk):
 
         # Use 16ms timer for ~60 FPS animation
         self.after(16, self._schedule_gif_redraw)
-
+    
+    # -------------------------------------------------
+    # PIL Video frame updates
+    # -------------------------------------------------
+    def _schedule_pil_video_update(self):
+        """Schedule update for PIL video frames."""
+        # Update frames for PIL-based video players directly to canvas
+        if hasattr(self, 'video_player_manager'):
+            has_players = len(self.video_player_manager.players) > 0 if hasattr(self.video_player_manager, 'players') else False
+            if has_players:
+                # Check if in single-screen stacked mode for ss_mask
+                is_single_stacked = (
+                    self.renderer.screen_manager.screen_mode == "single" and 
+                    getattr(self.renderer, '_single_screen_stacked', False)
+                )
+                ss_mask = getattr(self.renderer, 'ss_mask', None)
+                
+                # Get canvas dimensions for geometry calculation
+                canvas_w = self.canvas.winfo_width()
+                canvas_h = self.canvas.winfo_height()
+                bezel_scale = min(
+                    (canvas_w - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.width,
+                    (canvas_h - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.height
+                )
+                device_x = self.renderer.DEVICE_PADDING + (canvas_w - 2 * self.renderer.DEVICE_PADDING - round(self.renderer.bezel_img.width * bezel_scale)) // 2
+                device_y = self.renderer.DEVICE_PADDING + (canvas_h - 2 * self.renderer.DEVICE_PADDING - round(self.renderer.bezel_img.height * bezel_scale)) // 2
+            
+                # Get main screen geometry
+                main_screen_geometry = None
+                main_screen = getattr(self.renderer.screen_manager, 'main', None)
+                if main_screen:
+                    main_screen_geometry = (
+                        device_x + round(main_screen.x * bezel_scale),
+                        device_y + round(main_screen.y * bezel_scale),
+                        round(main_screen.w * bezel_scale),
+                        round(main_screen.h * bezel_scale)
+                    )
+                
+                # Get external screen geometry for overlap calculation
+                external_screen_geometry = None
+                ext_screen = getattr(self.renderer.screen_manager, 'external', None)
+                if ext_screen:
+                    external_screen_geometry = (
+                        device_x + round(ext_screen.x * bezel_scale),
+                        device_y + round(ext_screen.y * bezel_scale),
+                        round(ext_screen.w * bezel_scale),
+                        round(ext_screen.h * bezel_scale)
+                    )
+                
+                self.video_player_manager.update_canvas_frames(
+                    self.canvas,
+                    is_single_stacked=is_single_stacked,
+                    ss_mask=ss_mask,
+                    main_screen_geometry=main_screen_geometry,
+                    external_screen_geometry=external_screen_geometry
+                )
+        
+        # Schedule next update (~15 FPS)
+        self._pil_video_timer_id = self.after(66, self._schedule_pil_video_update)
+    
+    def _stop_pil_video_updates(self):
+        """Stop the PIL video update timer."""
+        if hasattr(self, '_pil_video_timer_id') and self._pil_video_timer_id:
+            self.after_cancel(self._pil_video_timer_id)
+            self._pil_video_timer_id = None
+    
     # -------------------------------------------------
     # Frame color callback
     # -------------------------------------------------
@@ -642,6 +712,9 @@ class App(TkinterDnD.Tk):
         # This is a band aid solution to fixing the background scroll from freezing on bezel switching.
         # If you can fix it please do <3
         self._do_resize_with_size(self.canvas.winfo_width(), self.canvas.winfo_height())
+        
+        # Update video positions after bezel change
+        self._update_video_positions()
         
         # Save the bezel selection to settings
         self.save_settings()
@@ -719,6 +792,9 @@ class App(TkinterDnD.Tk):
         # Invalidate cache to ensure fresh render
         self.renderer._invalidate_static_cache()
         
+        # Update video positions to match current canvas state
+        self._update_video_positions()
+        
         canvas_w = self.canvas.winfo_width()
         canvas_h = self.canvas.winfo_height()
         if canvas_w <= 1 or canvas_h <= 1:
@@ -732,9 +808,156 @@ class App(TkinterDnD.Tk):
         render_h = canvas_h * RES_FACTOR
 
         # -----------------------------
-        # Render full composite at high-res
+        # Compute device rectangle first (needed for video and content positioning)
         # -----------------------------
-        full_image = self.renderer.composite((render_w, render_h), skip_background=clean)
+        pad = self.renderer.DEVICE_PADDING * RES_FACTOR
+
+        scale = min(
+            (canvas_w - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.width,
+            (canvas_h - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.height
+        )
+
+        device_w = round(self.renderer.bezel_img.width * scale * RES_FACTOR)
+        device_h = round(self.renderer.bezel_img.height * scale * RES_FACTOR)
+        device_x = pad + (render_w - 2 * pad - device_w) // 2
+        device_y = pad + (render_h - 2 * pad - device_h) // 2
+
+        # -----------------------------
+        # Add video wallpapers FIRST (behind content)
+        # -----------------------------
+        # Get video frames for screenshot
+        # -----------------------------
+        video_layer = Image.new('RGBA', (render_w, render_h), (0, 0, 0, 0))
+        
+        video_found = False
+        if hasattr(self, 'video_player_manager'):
+            # Check if in single-screen stacked mode (need to apply ss_mask to main screen video)
+            is_single_stacked = (
+                self.renderer.screen_manager.screen_mode == "single" and 
+                getattr(self.renderer, '_single_screen_stacked', False)
+            )
+            
+            # Get external screen geometry for overlap calculation
+            ext_screen = self.renderer.screen_manager.external
+            
+            for screen_name, player in self.video_player_manager.players.items():
+                frame = player.get_current_frame() if hasattr(player, 'get_current_frame') else None
+                if frame:
+                    video_found = True
+                    
+                    # Calculate video position matching high-res composite rendering
+                    # (same way renderer calculates wallpaper positions at high-res)
+                    # Use render dimensions - but DON'T multiply DEVICE_PADDING by RES_FACTOR
+                    # (renderer uses canvas_size directly without scaling padding)
+                    bezel_scale_hires = min(
+                        (render_w - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.width,
+                        (render_h - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.height
+                    )
+                    
+                    device_x = self.renderer.DEVICE_PADDING + (render_w - 2 * self.renderer.DEVICE_PADDING - round(self.renderer.bezel_img.width * bezel_scale_hires)) // 2
+                    device_y = self.renderer.DEVICE_PADDING + (render_h - 2 * self.renderer.DEVICE_PADDING - round(self.renderer.bezel_img.height * bezel_scale_hires)) // 2
+                    
+                    screen = getattr(self.renderer.screen_manager, screen_name, None)
+                    if screen:
+                        screen_x = device_x + round(screen.x * bezel_scale_hires)
+                        screen_y = device_y + round(screen.y * bezel_scale_hires)
+                        screen_w = round(screen.w * bezel_scale_hires)
+                        screen_h = round(screen.h * bezel_scale_hires)
+                        
+                        video_x = int(screen_x)
+                        video_y = int(screen_y)
+                        video_w = int(screen_w)
+                        video_h = int(screen_h)
+                        
+                        video_img = frame.resize((video_w, video_h), Image.Resampling.BILINEAR)
+                        
+                        # Apply ss_mask for main screen in single-screen stacked mode
+                        if screen_name == 'main' and is_single_stacked and self.renderer.ss_mask:
+                            # Resize ss_mask to main screen size
+                            screen_mask = self.renderer.ss_mask.resize((video_w, video_h), Image.Resampling.LANCZOS)
+                            # Extract alpha channel as mask
+                            if screen_mask.mode == "RGBA":
+                                screen_mask = screen_mask.split()[3]
+                            elif screen_mask.mode != "L":
+                                screen_mask = screen_mask.convert("L")
+                            
+                            # Create bottom screen mask for clipping (overlap with external screen)
+                            if ext_screen:
+                                ext_x = device_x + round(ext_screen.x * bezel_scale_hires)
+                                ext_y = device_y + round(ext_screen.y * bezel_scale_hires)
+                                ext_w = round(ext_screen.w * bezel_scale_hires)
+                                ext_h = round(ext_screen.h * bezel_scale_hires)
+                                
+                                # Calculate overlap area
+                                overlap_x1 = max(0, ext_x - video_x)
+                                overlap_y1 = max(0, ext_y - video_y)
+                                overlap_x2 = min(video_w, ext_x + ext_w - video_x)
+                                overlap_y2 = min(video_h, ext_y + ext_h - video_y)
+                                
+                                if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
+                                    bottom_mask = Image.new("L", (video_w, video_h), 0)
+                                    draw = ImageDraw.Draw(bottom_mask)
+                                    draw.rectangle([overlap_x1, overlap_y1, overlap_x2, overlap_y2], fill=255)
+                                    # Combine masks
+                                    combined_mask = ImageChops.multiply(screen_mask, bottom_mask)
+                                else:
+                                    combined_mask = screen_mask
+                            else:
+                                combined_mask = screen_mask
+                            
+                            # Apply mask to video - apply directly to alpha channel
+                            if video_img.mode != "RGBA":
+                                video_img = video_img.convert("RGBA")
+                            r, g, b, a = video_img.split()
+                            a = ImageChops.multiply(a, combined_mask)
+                            video_img = Image.merge('RGBA', (r, g, b, a))
+                        
+                        video_layer.paste(video_img, (video_x, video_y), video_img)
+
+        # -----------------------------
+        # Render layers matching live display:
+        # 1. BG (full)
+        # 2. Video (on top of bg)
+        # 3. Content with skip_background=True (on top of video)
+        # -----------------------------
+        
+        # Layer 1: Background (fitted to full render area)
+        if clean:
+            # For clean screenshot, use transparent background
+            base_layer = Image.new('RGBA', (render_w, render_h), (0, 0, 0, 0))
+        else:
+            # Get background fitted to canvas
+            bg_image = self.renderer.get_background_image((render_w, render_h))
+            if bg_image:
+                bg_image = bg_image.convert('RGBA')
+                # Scale bg to fit render size
+                bg_image = bg_image.resize((render_w, render_h), Image.Resampling.BILINEAR)
+            base_layer = bg_image if bg_image else Image.new('RGBA', (render_w, render_h), (0, 0, 0, 0))
+        
+        # Render content WITHOUT bg at high-res (matches video positioning)
+        content_no_bg = self.renderer.composite((render_w, render_h), skip_background=True)
+        
+        # Layer 2: Add video on top of bg
+        if video_found:
+            # Create mask from content alpha - where content is transparent (0), show video
+            # where content is opaque (>0), hide video (apps/UI should be on top)
+            content_rgba = content_no_bg
+            if content_rgba.mode != 'RGBA':
+                content_rgba = content_rgba.convert('RGBA')
+            
+            # Invert content alpha: transparent areas become 255 (show video)
+            _, _, _, content_alpha = content_rgba.split()
+            video_mask = ImageChops.invert(content_alpha)
+            
+            # Apply mask to video layer
+            video_r, video_g, video_b, video_alpha = video_layer.split()
+            video_alpha_masked = ImageChops.multiply(video_alpha, video_mask)
+            video_layer_masked = Image.merge('RGBA', (video_r, video_g, video_b, video_alpha_masked))
+            
+            base_layer = Image.alpha_composite(base_layer, video_layer_masked)
+        
+        # Layer 3: Content WITHOUT bg (so it shows video/bg through transparent areas)
+        full_image = Image.alpha_composite(base_layer, content_no_bg)
 
         # -----------------------------
         # Compute device rectangle exactly like preview
@@ -786,14 +1009,321 @@ class App(TkinterDnD.Tk):
         if folder:
             self._load_theme_from_path(Path(folder))
 
-    def _load_theme_from_path(self, theme_path: Path):
-        """Load a theme from a given path (used by both button and drag-drop)."""
+    def _load_theme_from_path(self, theme_path: Path, skip_cleanup: bool = False, skip_save: bool = False):
+        """Load a theme from a given path (used by both button and drag-drop).
+        
+        Args:
+            theme_path: Path to the theme folder
+            skip_cleanup: If True, skip video cleanup (used for initial boot)
+            skip_save: If True, skip saving settings (used for initial boot)
+        """
         if theme_path.is_dir():
+            # Cleanup old video players - detach VLC first to prevent errors
+            # Skip cleanup on initial boot (no videos to clean up yet)
+            if not skip_cleanup and hasattr(self, 'video_player_manager'):
+                for player in list(self.video_player_manager.players.values()):
+                    # Detach VLC from window (only for VLC-based players, not PIL)
+                    if hasattr(player, 'player') and player.player:
+                        try:
+                            player.player.set_hwnd(0)
+                        except:
+                            pass
+                    # Delete canvas window
+                    if hasattr(player, 'video_window_id') and player.video_window_id:
+                        try:
+                            self.canvas.delete(player.video_window_id)
+                        except:
+                            pass
+                        player.video_window_id = None
+                    # Delete PIL video canvas image
+                    if hasattr(player, '_canvas_image_id') and player._canvas_image_id:
+                        try:
+                            self.canvas.delete(player._canvas_image_id)
+                        except:
+                            pass
+                        player._canvas_image_id = None
+                    # Destroy video frame
+                    if hasattr(player, 'video_frame') and player.video_frame:
+                        try:
+                            player.video_frame.destroy()
+                        except:
+                            pass
+                        player.video_frame = None
+                    # Release VLC (only for VLC-based players, not PIL)
+                    if hasattr(player, 'player') and player.player:
+                        try:
+                            player.player.release()
+                        except:
+                            pass
+                        player.player = None
+                self.video_player_manager.players.clear()
+                
+                # Stop the old video timer to prevent lag
+                if hasattr(self, '_pil_video_timer_id') and self._pil_video_timer_id:
+                    self.after_cancel(self._pil_video_timer_id)
+                    self._pil_video_timer_id = None
+            
+            # Load new theme
             self.renderer.load_theme(theme_path, max_grid_items=self.max_grid_slots)
+            
+            # Refresh preview panel
             self.preview_panel.refresh()
-            self.redraw()
+            
+            # Check if there are video wallpapers
+            main_screen = self.renderer.screen_manager.main
+            external_screen = self.renderer.screen_manager.external
+            has_video = (main_screen.wallpaper_is_video and main_screen.wallpaper_video_path) or \
+                       (external_screen.wallpaper_is_video and external_screen.wallpaper_video_path)
+            
+            if has_video:
+                # Setup videos with retry - redraw will happen when video starts playing
+                self._try_setup_videos_with_retry(on_video_ready_callback=self._on_video_playing)
+            else:
+                # No videos, redraw immediately
+                self._setup_video_wallpapers()
+                self.redraw()
+            
             self.last_theme_path = str(theme_path)
-            self.save_settings()
+            if not skip_save:
+                self.save_settings()
+    
+    def _on_video_playing(self):
+        """Callback when video starts playing - now safe to draw content."""
+        self.redraw()
+        # Lower videos to be just above BG (not below everything)
+        # This ensures: BG < video < content
+        if hasattr(self, 'video_player_manager') and hasattr(self.video_player_manager, 'lower_all_videos'):
+            # Get BG canvas items
+            bg_id = getattr(self, '_canvas_bg_id', None)
+            bg_id_2 = getattr(self, '_canvas_bg_id_2', None)
+            
+            # Lower videos to just above BG
+            for player in self.video_player_manager.players.values():
+                canvas_id = getattr(player, '_canvas_image_id', None)
+                if canvas_id:
+                    if bg_id:
+                        self.canvas.tag_lower(canvas_id, bg_id)
+                    if bg_id_2:
+                        self.canvas.tag_lower(canvas_id, bg_id_2)
+        
+        # Force a resize to fix layering - this is a workaround for theme switching
+        self.update_idletasks()
+        self._apply_zoom()
+    
+    def _try_setup_videos_with_retry(self, on_video_ready_callback=None, retry_count=0, max_retries=5):
+        """Try to setup videos, retrying if canvas isn't ready yet."""
+        # Check if videos were created
+        self.update_idletasks()
+        
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        
+        # If canvas not ready, retry after delay
+        if canvas_w <= 1 or canvas_h <= 1:
+            if retry_count < max_retries:
+                self.after(50, lambda: self._try_setup_videos_with_retry(
+                    on_video_ready_callback=on_video_ready_callback,
+                    retry_count=retry_count + 1,
+                    max_retries=max_retries
+                ))
+            return
+        
+        # Canvas is ready, setup videos
+        self._setup_video_wallpapers(on_video_ready_callback=on_video_ready_callback)
+        
+        # Check if videos were actually created (may have failed due to other reasons)
+        if (retry_count < max_retries and 
+            hasattr(self, 'video_player_manager') and
+            len(self.video_player_manager.players) == 0):
+            # Videos weren't created, try again
+            self.after(50, lambda: self._try_setup_videos_with_retry(
+                on_video_ready_callback=on_video_ready_callback,
+                retry_count=retry_count + 1,
+                max_retries=max_retries
+            ))
+    
+    def _setup_video_wallpapers(self, on_video_ready_callback=None):
+        """Setup video players for video wallpapers.
+        
+        Args:
+            on_video_ready_callback: Called when video starts playing
+        """
+        main_has_video = False
+        external_has_video = False
+        
+        # Check external screen first (rendered behind in single-screen stacked mode)
+        external_screen = self.renderer.screen_manager.external
+        if external_screen.wallpaper_is_video and external_screen.wallpaper_video_path:
+            geometry = self._get_screen_geometry('external')
+            if geometry:
+                # Use PIL-based player to fix Z-order issues
+                self.video_player_manager.create_player('external', external_screen.wallpaper_video_path, geometry, use_pil=True)
+                self.video_player_manager.play('external', on_playing_callback=on_video_ready_callback)
+                external_has_video = True
+        
+        # Check main screen second (rendered in front in single-screen stacked mode)
+        main_screen = self.renderer.screen_manager.main
+        if main_screen.wallpaper_is_video and main_screen.wallpaper_video_path:
+            geometry = self._get_screen_geometry('main')
+            if geometry:
+                # Use PIL-based player to fix Z-order issues
+                self.video_player_manager.create_player('main', main_screen.wallpaper_video_path, geometry, use_pil=True)
+                # Always call callback for main screen to ensure redraw happens
+                self.video_player_manager.play('main', on_playing_callback=on_video_ready_callback)
+                main_has_video = True
+        
+        # If no videos at all but callback provided, call it immediately
+        if not main_has_video and not external_has_video and on_video_ready_callback:
+            on_video_ready_callback()
+        
+        # Ensure video update timer is started if videos were created
+        if main_has_video or external_has_video:
+            self._schedule_pil_video_update()
+            # Lower videos to be behind content
+            if hasattr(self.video_player_manager, 'lower_all_videos'):
+                self.video_player_manager.lower_all_videos(self.canvas)
+    
+    def _get_screen_geometry(self, screen_name: str):
+        """Get screen geometry in canvas coordinates for video positioning.
+        
+        This should match how the renderer draws wallpapers in composite().
+        """
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        
+        if canvas_w <= 1 or canvas_h <= 1:
+            return None
+        
+        # Get canvas zoom
+        canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+        
+        # Calculate bezel scale the same way the renderer does - scale to fit canvas
+        bezel_scale = min(
+            (canvas_w - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.width,
+            (canvas_h - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.height
+        )
+        
+        # Calculate bezel position within canvas (centered with padding) - matches renderer
+        device_w = round(self.renderer.bezel_img.width * bezel_scale)
+        device_h = round(self.renderer.bezel_img.height * bezel_scale)
+        device_x = self.renderer.DEVICE_PADDING + (canvas_w - 2 * self.renderer.DEVICE_PADDING - device_w) // 2
+        device_y = self.renderer.DEVICE_PADDING + (canvas_h - 2 * self.renderer.DEVICE_PADDING - device_h) // 2
+        
+        # Get the screen
+        if screen_name == 'main':
+            screen = self.renderer.screen_manager.main
+        else:
+            screen = self.renderer.screen_manager.external
+        
+        # Calculate screen position within bezel (matches renderer's wallpaper drawing)
+        screen_x = device_x + round(screen.x * bezel_scale)
+        screen_y = device_y + round(screen.y * bezel_scale)
+        screen_w = round(screen.w * bezel_scale)
+        screen_h = round(screen.h * bezel_scale)
+        
+        # Apply canvas zoom if needed
+        if canvas_zoom != 1.0:
+            zoomed_w = int(canvas_w * canvas_zoom)
+            zoomed_h = int(canvas_h * canvas_zoom)
+            offset_x = (zoomed_w - canvas_w) // 2
+            offset_y = (zoomed_h - canvas_h) // 2
+            
+            screen_x = screen_x * canvas_zoom - offset_x
+            screen_y = screen_y * canvas_zoom - offset_y
+            screen_w = screen_w * canvas_zoom
+            screen_h = screen_h * canvas_zoom
+        
+        return (screen_x, screen_y, screen_w, screen_h)
+    
+    def _update_video_positions(self):
+        """Update video player positions (e.g., after resize or screen drag)."""
+        if not hasattr(self, 'video_player_manager'):
+            return
+        
+        # Update main screen video position
+        if self.video_player_manager.has_player('main'):
+            geometry = self._get_screen_geometry('main')
+            if geometry:
+                self.video_player_manager.update_geometry('main', geometry)
+        
+        # Update external screen video position
+        if self.video_player_manager.has_player('external'):
+            geometry = self._get_screen_geometry('external')
+            if geometry:
+                self.video_player_manager.update_geometry('external', geometry)
+    
+    def _update_video_mask_overlay(self):
+        """Create or update mask overlay for single-screen stacked mode video."""
+        if not hasattr(self, 'video_player_manager'):
+            return
+        
+        # Check renderer is ready
+        if not hasattr(self, 'renderer') or not self.renderer.bezel_img:
+            return
+        
+        # Skip mask overlay when using PIL-based video - masking is already applied in apply_ss_mask()
+        # Only use overlay for non-PIL video (like VLC)
+        if hasattr(self.video_player_manager, 'players'):
+            from video_player import PILVideoPlayer
+            for screen_name, player in self.video_player_manager.players.items():
+                if isinstance(player, PILVideoPlayer):
+                    # PIL video - mask is applied in apply_ss_mask(), skip overlay
+                    # Remove existing mask if present
+                    mask_id = getattr(self, '_canvas_mask_id', None)
+                    if mask_id is not None and mask_id != 0:
+                        self.canvas.delete(mask_id)
+                        self._canvas_mask_id = None
+                    return
+        
+        # Check renderer is ready
+        if not hasattr(self, 'renderer') or not self.renderer.bezel_img:
+            return
+        
+        # Skip mask overlay when using PIL-based video - masking is already applied in apply_ss_mask()
+        # Only use overlay for non-PIL video (like VLC)
+        if hasattr(self.video_player_manager, 'players'):
+            for screen_name, player in self.video_player_manager.players.items():
+                if hasattr(player, '_use_pil') and player._use_pil:
+                    # PIL video - mask is applied in apply_ss_mask(), skip overlay
+                    # Remove existing mask if present
+                    mask_id = getattr(self, '_canvas_mask_id', None)
+                    if mask_id is not None and mask_id != 0:
+                        self.canvas.delete(mask_id)
+                        self._canvas_mask_id = None
+                    return
+        
+        canvas_w = self.canvas.winfo_width()
+        canvas_h = self.canvas.winfo_height()
+        
+        # Get mask overlay from renderer
+        mask_overlay, pos = self.renderer.get_video_mask_overlay((canvas_w, canvas_h))
+        
+        # If we have a mask and main video, create/update overlay
+        if mask_overlay is not None and pos and self.video_player_manager.has_player('main'):
+            x, y, w, h = pos
+            
+            # Convert PIL image to Tkinter
+            self.tk_mask_img = ImageTk.PhotoImage(mask_overlay)
+            
+            mask_id = getattr(self, '_canvas_mask_id', None)
+            if mask_id is None or mask_id == 0:
+                self._canvas_mask_id = self.canvas.create_image(x + w//2, y + h//2, anchor="center", image=self.tk_mask_img)
+            else:
+                self.canvas.coords(mask_id, x + w//2, y + h//2)
+                self.canvas.itemconfig(mask_id, image=self.tk_mask_img)
+            
+            # Raise mask above main video window (main is already below content, so mask will be too)
+            mask_id = getattr(self, '_canvas_mask_id', None)
+            if mask_id is not None and self.video_player_manager.has_player('main'):
+                main_window_id = self.video_player_manager.get_player_window_id('main')
+                if main_window_id is not None:
+                    self.canvas.tag_raise(mask_id, main_window_id)
+        else:
+            # No mask needed - remove existing mask
+            mask_id = getattr(self, '_canvas_mask_id', None)
+            if mask_id is not None and mask_id != 0:
+                self.canvas.delete(mask_id)
+                self._canvas_mask_id = None
     
     def _on_theme_drop(self, event):
         """Handle folder drop from file explorer."""
@@ -1772,6 +2302,8 @@ class App(TkinterDnD.Tk):
         # Invalidate renderer cache to avoid stale background
         self.renderer._invalidate_static_cache()
         self.redraw()
+        # Update video positions for new zoom level
+        self._update_video_positions()
     
     def _save_canvas_zoom(self):
         """Save canvas zoom to settings."""
@@ -2503,9 +3035,8 @@ class App(TkinterDnD.Tk):
         
         self._load_folder_color_previews()
         
-        # Generate background image (fitted to canvas, independent of zoom)
-        bg_image = self.renderer.get_background_image((canvas_w, canvas_h))
-        
+        # TEMPORARILY DISABLE BG FOR TESTING - Skip background drawing entirely
+        # Don't create/update bg canvas items
         # Get clean content WITHOUT background (so we don't duplicate)
         clean_content = self.renderer.composite((canvas_w, canvas_h), skip_background=True, skip_borders=True, skip_handles=True, skip_magnify=True)
         
@@ -2528,6 +3059,9 @@ class App(TkinterDnD.Tk):
         # Center positions
         img_x = canvas_w // 2
         img_y = canvas_h // 2
+        
+        # Generate background image (fitted to canvas, independent of zoom)
+        bg_image = self.renderer.get_background_image((canvas_w, canvas_h))
         
         # Draw background first (fitted to canvas, independent of zoom)
         # For scrolling background, we need to create two image items
@@ -2565,6 +3099,10 @@ class App(TkinterDnD.Tk):
             self.canvas.itemconfig(self._canvas_bg_id, image=self.tk_bg_img)
             self.canvas.itemconfig(self._canvas_bg_id_2, image=self.tk_bg_img)
         
+        # Lower background to bottom to ensure video is sandwiched between bg and content
+        self.canvas.lower(self._canvas_bg_id)
+        self.canvas.lower(self._canvas_bg_id_2)
+        
         # Start or update background scroll animation
         self._update_bg_scroll()
         
@@ -2575,6 +3113,65 @@ class App(TkinterDnD.Tk):
         else:
             self.canvas.coords(self._canvas_image_id, img_x, img_y)
             self.canvas.itemconfig(self._canvas_image_id, image=self.tk_img)
+        
+        # Raise content above everything (including videos) to ensure correct layering
+        self.canvas.tag_raise(self._canvas_image_id)
+        
+        # Update video positions to match current canvas/zoom state
+        self._update_video_positions()
+        
+        # Update video frames directly to canvas
+        if hasattr(self, 'video_player_manager'):
+            # Check if in single-screen stacked mode for ss_mask
+            is_single_stacked = (
+                self.renderer.screen_manager.screen_mode == "single" and 
+                getattr(self.renderer, '_single_screen_stacked', False)
+            )
+            ss_mask = getattr(self.renderer, 'ss_mask', None)
+            
+            bezel_scale = min(
+                (canvas_w - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.width,
+                (canvas_h - 2 * self.renderer.DEVICE_PADDING) / self.renderer.bezel_img.height
+            )
+            device_x = self.renderer.DEVICE_PADDING + (canvas_w - 2 * self.renderer.DEVICE_PADDING - round(self.renderer.bezel_img.width * bezel_scale)) // 2
+            device_y = self.renderer.DEVICE_PADDING + (canvas_h - 2 * self.renderer.DEVICE_PADDING - round(self.renderer.bezel_img.height * bezel_scale)) // 2
+            
+            # Get main screen geometry
+            main_screen_geometry = None
+            main_screen = getattr(self.renderer.screen_manager, 'main', None)
+            if main_screen:
+                main_screen_geometry = (
+                    device_x + round(main_screen.x * bezel_scale),
+                    device_y + round(main_screen.y * bezel_scale),
+                    round(main_screen.w * bezel_scale),
+                    round(main_screen.h * bezel_scale)
+                )
+            
+            # Get external screen geometry for overlap calculation
+            external_screen_geometry = None
+            ext_screen = getattr(self.renderer.screen_manager, 'external', None)
+            if ext_screen:
+                external_screen_geometry = (
+                    device_x + round(ext_screen.x * bezel_scale),
+                    device_y + round(ext_screen.y * bezel_scale),
+                    round(ext_screen.w * bezel_scale),
+                    round(ext_screen.h * bezel_scale)
+                )
+            
+            self.video_player_manager.update_canvas_frames(
+                self.canvas,
+                is_single_stacked=is_single_stacked,
+                ss_mask=ss_mask,
+                main_screen_geometry=main_screen_geometry,
+                external_screen_geometry=external_screen_geometry
+            )
+        
+        # Schedule next frame update for PIL videos (only if not already scheduled)
+        if not hasattr(self, '_pil_video_timer_id') or self._pil_video_timer_id is None:
+            self._schedule_pil_video_update()
+        
+        # Create mask overlay for single-screen stacked mode
+        self._update_video_mask_overlay()
         
         # Draw magnify window separately (without canvas zoom, at original position)
         if self.renderer.bezel_edit_mode and getattr(self.renderer, 'magnify_window', True):

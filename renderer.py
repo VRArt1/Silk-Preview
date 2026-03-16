@@ -1922,13 +1922,54 @@ class Renderer:
             return self.video_frame_cache[cache_key]
 
         try:
+            import av
+            
             container = av.open(str(path))
             stream = container.streams.video[0]
 
+            # Get rotation from various possible sources
+            rotation = 0
+            
+            # Try stream metadata
+            if stream.metadata:
+                rot = stream.metadata.get('rotate', None)
+                if rot:
+                    rotation = int(rot)
+            
+            # Try side data on first frame
+            if rotation == 0:
+                container.seek(0)
+                frame = next(container.decode(stream))
+                # Check frame side data for rotation
+                if hasattr(frame, 'side_data'):
+                    for sd in frame.side_data:
+                        pass
+            
+            # Try alternative - check rotation attribute on frame
+            if rotation == 0:
+                container.seek(0)
+                frame = next(container.decode(stream))
+                # Check if frame has rotation attribute
+                frame_rot = getattr(frame, 'rotation', 0)
+                if frame_rot:
+                    rotation = frame_rot
+            
+            # Normalize rotation to positive values (90, 180, 270)
+            rotation = rotation % 360
+            
             container.seek(0)
 
             frame = next(container.decode(stream))
             img = frame.to_image()
+            
+            # Apply rotation if needed
+            if rotation in (90, 180, 270):
+                if rotation == 90:
+                    img = img.transpose(Image.ROTATE_270)
+                elif rotation == 180:
+                    img = img.transpose(Image.ROTATE_180)
+                elif rotation == 270:
+                    img = img.transpose(Image.ROTATE_90)
 
             self.video_frame_cache[cache_key] = img
             return img
@@ -1937,6 +1978,14 @@ class Renderer:
             print(f"Video decode failed for {path}: {e}")
 
             return None
+
+    def is_video_available(self) -> bool:
+        """Check if video playback is available (opencv-python installed)."""
+        try:
+            import cv2
+            return True
+        except ImportError:
+            return False
     
     def _load_image_with_exif(self, path: Path) -> Image.Image | None:
         """Load an image and apply EXIF orientation correction if needed."""
@@ -1971,6 +2020,10 @@ class Renderer:
         random.shuffle(self._shuffled_game_names)
         self._next_game_img_index = 0
         self.theme_path = theme_path if theme_path else PLACEHOLDER_DIR
+        
+        # Clear wallpaper data from previous theme (critical for switching away from video themes!)
+        self.screen_manager.main.clear_wallpaper()
+        self.screen_manager.external.clear_wallpaper()
 
         if not (ASSETS_DIR / "empty.png").exists():
             raise FileNotFoundError("assets/empty.png is required for filling empty grid slots")
@@ -2035,26 +2088,35 @@ class Renderer:
             try:
                 ext_lower = path_file.suffix.lower().strip(".")
                 if ext_lower in ("mp4", "webm"):
-                    # Use your helper to get the first frame as an image
-                    img = self.first_frame_from_video(path_file)
-                    if not img:
-                        continue
+                    # Only use video if opencv is available; otherwise use first frame as static
+                    if self.is_video_available():
+                        img = self.first_frame_from_video(path_file)
+                        if not img:
+                            continue
+                        self.screen_manager.main.set_wallpaper_video(str(path_file), img)
+                    else:
+                        # Fallback: use first frame as static wallpaper
+                        img = self.first_frame_from_video(path_file)
+                        if not img:
+                            continue
+                        self.screen_manager.main.wallpaper = img.convert("RGBA")
+                        self.screen_manager.main.wallpaper_frames = []
                 else:
                     img = self._load_image_with_exif(path_file)
                     if img is None:
                         continue
 
-                if getattr(img, "is_animated", False):
-                    frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
-                    duration = img.info.get("duration", 100)
-                    # Set directly on screen manager to avoid setter clearing frames
-                    self.screen_manager.main.wallpaper_frames = frames
-                    self.screen_manager.main.wallpaper_index = 0
-                    self.screen_manager.main.wallpaper_duration = duration
-                    self.screen_manager.main.wallpaper = frames[0]
-                else:
-                    self.screen_manager.main.wallpaper = img.convert("RGBA")
-                    self.screen_manager.main.wallpaper_frames = []
+                    if getattr(img, "is_animated", False):
+                        frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
+                        duration = img.info.get("duration", 100)
+                        # Set directly on screen manager to avoid setter clearing frames
+                        self.screen_manager.main.wallpaper_frames = frames
+                        self.screen_manager.main.wallpaper_index = 0
+                        self.screen_manager.main.wallpaper_duration = duration
+                        self.screen_manager.main.wallpaper = frames[0]
+                    else:
+                        self.screen_manager.main.wallpaper = img.convert("RGBA")
+                        self.screen_manager.main.wallpaper_frames = []
 
             except Exception as e:
                 print(f"Failed to load wallpaper {fname}: {e}")
@@ -2083,7 +2145,7 @@ class Renderer:
                     except Exception:
                         continue
                     break
-
+        
         # Bottom wallpaper (supports GIF/WebP)
         self.wallpaper_bottom = None
         self.wallpaper_bottom_frames = []
@@ -2094,7 +2156,7 @@ class Renderer:
         bottom_files_to_try = []
         if wallpaper_external_name:
             ext = Path(wallpaper_external_name).suffix.lower()
-            if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+            if ext in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".webm"):
                 bottom_files_to_try.append(wallpaper_external_name)
         bottom_files_to_try.extend(bottom_candidates)
 
@@ -2106,38 +2168,51 @@ class Renderer:
             try:
                 ext_lower = path_file.suffix.lower().strip(".")
                 if ext_lower in ("mp4", "webm"):
-                    img = self.first_frame_from_video(path_file)
-                    if not img:
-                        continue
+                    # Only use video if opencv is available; otherwise use first frame as static
+                    if self.is_video_available():
+                        img = self.first_frame_from_video(path_file)
+                        if not img:
+                            continue
+                        self.screen_manager.external.set_wallpaper_video(str(path_file), img)
+                    else:
+                        # Fallback: use first frame as static wallpaper
+                        img = self.first_frame_from_video(path_file)
+                        if not img:
+                            continue
+                        self.screen_manager.external.wallpaper = img.convert("RGBA")
+                        self.screen_manager.external.wallpaper_frames = []
                 else:
                     img = self._load_image_with_exif(path_file)
                     if img is None:
                         continue
 
-                if getattr(img, "is_animated", False):
-                    frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
-                    duration = img.info.get("duration", 100)
-                    # Set directly on screen manager to avoid setter clearing frames
-                    self.screen_manager.external.wallpaper_frames = frames
-                    self.screen_manager.external.wallpaper_index = 0
-                    self.screen_manager.external.wallpaper_duration = duration
-                    self.screen_manager.external.wallpaper = frames[0]
-                else:
-                    self.screen_manager.external.wallpaper = img.convert("RGBA")
-                    self.screen_manager.external.wallpaper_frames = []
+                    if getattr(img, "is_animated", False):
+                        frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
+                        duration = img.info.get("duration", 100)
+                        # Set directly on screen manager to avoid setter clearing frames
+                        self.screen_manager.external.wallpaper_frames = frames
+                        self.screen_manager.external.wallpaper_index = 0
+                        self.screen_manager.external.wallpaper_duration = duration
+                        self.screen_manager.external.wallpaper = frames[0]
+                    else:
+                        self.screen_manager.external.wallpaper = img.convert("RGBA")
+                        self.screen_manager.external.wallpaper_frames = []
 
             except Exception as e:
                 print(f"Failed to load wallpaper {fname}: {e}")
                 continue
 
             break
-
+        
+        # Fallback to placeholder for external wallpaper if none found
         if not self.screen_manager.external.wallpaper:
             for fname in bottom_candidates:
                 placeholder_file = PLACEHOLDER_DIR / "wallpapers" / fname
                 if placeholder_file.exists():
                     try:
-                        img = Image.open(placeholder_file)
+                        img = self._load_image_with_exif(placeholder_file)
+                        if img is None:
+                            continue
                         if getattr(img, "is_animated", False):
                             frames = [frame.convert("RGBA") for frame in ImageSequence.Iterator(img)]
                             duration = img.info.get("duration", 100)
@@ -2855,11 +2930,13 @@ class Renderer:
             base.alpha_composite(resized, (x, y))
 
         # Bottom wallpaper
-        paste(external_screen.get_current_wallpaper(),
-              device_x + round(external_screen.x * scale),
-              device_y + round(external_screen.y * scale),
-              round(external_screen.w * scale),
-              round(external_screen.h * scale))
+        ext_wallpaper = external_screen.get_current_wallpaper()
+        if ext_wallpaper:
+            paste(ext_wallpaper,
+                  device_x + round(external_screen.x * scale),
+                  device_y + round(external_screen.y * scale),
+                  round(external_screen.w * scale),
+                  round(external_screen.h * scale))
 
         # Animated top wallpaper (only in dual screen mode - single screen is handled at end)
         if self.screen_manager.screen_mode == "dual":
@@ -3546,6 +3623,7 @@ class Renderer:
             ext_w = round(external_screen.w * scale)
             ext_h = round(external_screen.h * scale)
             
+            # Single screen mode wallpaper
             main_wallpaper = main_screen.get_current_wallpaper()
             if main_wallpaper and self.ss_mask:
                 # Resize ss_mask to main screen size
@@ -3884,3 +3962,83 @@ class Renderer:
         self._draw_handle(base, ex + ew, ey + eh//2, (50, 205, 50, 255), 6)
         
         return base
+    
+    def get_video_mask_overlay(self, canvas_size: tuple[int, int]) -> tuple[Image.Image | None, tuple[int, int, int, int]]:
+        """
+        Generate a mask overlay for video in single-screen stacked mode.
+        Returns (mask_image, position) or (None, None) if not applicable.
+        
+        The mask shows where the main screen video should be visible (soft-edged),
+        with the overlap area clipped to only show over the external screen.
+        """
+        if not self.ss_mask or not self.bezel_img:
+            return None, None
+        
+        # Check if we're in single screen stacked mode
+        if self.screen_manager.screen_mode != "single":
+            return None, None
+        
+        if not getattr(self, '_single_screen_stacked', False):
+            return None, None
+        
+        canvas_w, canvas_h = canvas_size
+        
+        # Calculate scale (same as in composite)
+        scale = min(
+            (canvas_w - 2 * self.DEVICE_PADDING) / self.bezel_img.width,
+            (canvas_h - 2 * self.DEVICE_PADDING) / self.bezel_img.height
+        )
+        
+        device_w = round(self.bezel_img.width * scale)
+        device_h = round(self.bezel_img.height * scale)
+        device_x = self.DEVICE_PADDING + (canvas_w - 2 * self.DEVICE_PADDING - device_w) // 2
+        device_y = self.DEVICE_PADDING + (canvas_h - 2 * self.DEVICE_PADDING - device_h) // 2
+        
+        main_screen = self.screen_manager.main
+        external_screen = self.screen_manager.external
+        
+        # Get main screen dimensions (before masking)
+        main_x = device_x + round(main_screen.x * scale)
+        main_y = device_y + round(main_screen.y * scale)
+        main_w = round(main_screen.w * scale)
+        main_h = round(main_screen.h * scale)
+        
+        # Get external screen dimensions
+        ext_x = device_x + round(external_screen.x * scale)
+        ext_y = device_y + round(external_screen.y * scale)
+        ext_w = round(external_screen.w * scale)
+        ext_h = round(external_screen.h * scale)
+        
+        # Resize ss_mask to main screen size
+        mask_key = (id(self.ss_mask), main_w, main_h)
+        screen_mask = self._resize_cache.get(mask_key)
+        if screen_mask is None:
+            screen_mask = self.ss_mask.resize((main_w, main_h), Image.Resampling.LANCZOS)
+            if screen_mask.mode == "RGBA":
+                screen_mask = screen_mask.split()[3]
+            elif screen_mask.mode != "L":
+                screen_mask = screen_mask.convert("L")
+            self._resize_cache[mask_key] = screen_mask
+        
+        # Create bottom screen mask for clipping
+        bottom_mask = Image.new("L", (main_w, main_h), 0)
+        draw = ImageDraw.Draw(bottom_mask)
+        overlap_x1 = max(0, ext_x - main_x)
+        overlap_y1 = max(0, ext_y - main_y)
+        overlap_x2 = min(main_w, ext_x + ext_w - main_x)
+        overlap_y2 = min(main_h, ext_y + ext_h - main_y)
+        if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
+            draw.rectangle([overlap_x1, overlap_y1, overlap_x2, overlap_y2], fill=255)
+        
+        # Combine masks
+        from PIL import ImageChops
+        combined_mask = ImageChops.multiply(screen_mask, bottom_mask)
+        
+        # Create RGBA overlay with the mask as alpha
+        overlay = Image.new("RGBA", (main_w, main_h), (0, 0, 0, 0))
+        
+        # Create white fill with the combined mask as alpha
+        white_fill = Image.new("RGBA", (main_w, main_h), (255, 255, 255, 255))
+        overlay = Image.composite(white_fill, Image.new("RGBA", (main_w, main_h), (0, 0, 0, 0)), combined_mask)
+        
+        return overlay, (main_x, main_y, main_w, main_h)

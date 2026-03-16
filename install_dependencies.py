@@ -8,7 +8,7 @@ import platform
 import urllib.request
 import zipfile
 
-REQUIRED_PACKAGES = ["Pillow", "av", "tkinterdnd2"]
+REQUIRED_PACKAGES = ["Pillow", "av", "tkinterdnd2", "opencv-python"]
 
 def install_packages():
     for pkg in REQUIRED_PACKAGES:
@@ -17,8 +17,7 @@ def install_packages():
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", pkg])
             except subprocess.CalledProcessError:
-                print(f"[WARNING] Failed to install '{pkg}'. You may need to install it manually.")
-                return False
+                print(f"[WARNING] Failed to install '{pkg}'. Video wallpapers will use fallback.")
     return True
 
 def command_exists(cmd):
