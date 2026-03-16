@@ -147,7 +147,6 @@ class App(TkinterDnD.Tk):
         if "reverse_direction" not in self.config["Settings"]:
             self.config["Settings"]["reverse_direction"] = "False"
         self.reverse_direction = self.config.getboolean("Settings", "reverse_direction", fallback=False)
-        self.video_playback = self.config.getboolean("Settings", "video_playback", fallback=True)
         
         # Calculate max values from zoom levels
         self.max_rows_dual = max(r for r, c in self.zoom_levels_dual)
