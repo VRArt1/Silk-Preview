@@ -133,6 +133,11 @@ class App(TkinterDnD.Tk):
             self.config["Settings"]["last_theme_path"] = ""
         self.last_theme_path = self.config.get("Settings", "last_theme_path", fallback=None)
         
+        # video_playback
+        if "video_playback" not in self.config["Settings"]:
+            self.config["Settings"]["video_playback"] = "True"
+        self.video_playback = self.config.getboolean("Settings", "video_playback", fallback=True)
+        
         # bg_scroll_speed
         if "bg_scroll_speed" not in self.config["Settings"]:
             self.config["Settings"]["bg_scroll_speed"] = "1"
@@ -142,6 +147,7 @@ class App(TkinterDnD.Tk):
         if "reverse_direction" not in self.config["Settings"]:
             self.config["Settings"]["reverse_direction"] = "False"
         self.reverse_direction = self.config.getboolean("Settings", "reverse_direction", fallback=False)
+        self.video_playback = self.config.getboolean("Settings", "video_playback", fallback=True)
         
         # Calculate max values from zoom levels
         self.max_rows_dual = max(r for r, c in self.zoom_levels_dual)
@@ -377,6 +383,7 @@ class App(TkinterDnD.Tk):
         self.empty_slots_var = tk.BooleanVar(value=self.empty_slots)
         self.remember_var = tk.BooleanVar(value=self.remember_last_theme)
         self.bezel_edit_var = tk.BooleanVar(value=False)
+        self.video_playback_var = tk.BooleanVar(value=self.video_playback)
         
         # Bezel edit drag state
         self._dragging_handle = None
@@ -412,6 +419,9 @@ class App(TkinterDnD.Tk):
         self.canvas.bind("<Button-1>", self.on_canvas_left_click)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
         self.canvas.bind("<Motion>", self._on_canvas_motion)  # Track mouse position for magnify window
+        self.canvas.bind("<B1-Motion>", self._on_canvas_drag)  # Mouse drag
+        self.canvas.bind("<Enter>", self._on_canvas_enter)  # Mouse enters canvas
+        self.canvas.bind("<Leave>", self._on_canvas_leave)  # Mouse leaves canvas
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_left_release)
         
         self.bind("<Left>", lambda e: self.move_selection(-1, 0))
@@ -452,7 +462,21 @@ class App(TkinterDnD.Tk):
     
     def _on_canvas_resize_complete(self, event):
         """Force final redraw when mouse is released after resize."""
+        # User interaction ended - resume video updates
+        self._user_interacting = False
         self._do_resize_with_size(self.canvas.winfo_width(), self.canvas.winfo_height())
+    
+    def _on_canvas_drag(self, event):
+        """Handle mouse drag on canvas - pause video updates during drag."""
+        self._user_interacting = True
+    
+    def _on_canvas_enter(self, event):
+        """Handle mouse entering canvas - pause video updates."""
+        self._user_interacting = True
+    
+    def _on_canvas_leave(self, event):
+        """Handle mouse leaving canvas - resume video updates."""
+        self._user_interacting = False
     
     def _do_resize_with_size(self, w, h):
         """Redraw with specific dimensions."""
@@ -609,7 +633,32 @@ class App(TkinterDnD.Tk):
     # PIL Video frame updates
     # -------------------------------------------------
     def _schedule_pil_video_update(self):
-        """Schedule update for PIL video frames."""
+        """Schedule update for PIL video frames with hybrid idle/interval scheduling."""
+        # Skip video updates entirely if video playback is disabled
+        if not getattr(self, 'video_playback', True):
+            return
+        
+        import time
+        
+        # Check elapsed time since last update
+        current_time = time.time()
+        last_update = getattr(self, '_last_video_update', 0)
+        elapsed = current_time - last_update
+        
+        # Minimum interval to keep UI responsive (150ms = ~6 FPS)
+        min_interval = 0.150
+        
+        # If not enough time has passed, schedule normally and exit
+        if elapsed < min_interval:
+            wait_time = int((min_interval - elapsed) * 1000)
+            self._pil_video_timer_id = self.after(wait_time, self._schedule_pil_video_update)
+            return
+        
+        # Skip video updates during user interaction for better UI responsiveness
+        if getattr(self, '_user_interacting', False):
+            self._pil_video_timer_id = self.after(50, self._schedule_pil_video_update)
+            return
+        
         # Update frames for PIL-based video players directly to canvas
         if hasattr(self, 'video_player_manager'):
             has_players = len(self.video_player_manager.players) > 0 if hasattr(self.video_player_manager, 'players') else False
@@ -653,6 +702,8 @@ class App(TkinterDnD.Tk):
                         round(ext_screen.h * bezel_scale)
                     )
                 
+                # Measure ONLY the rendering time (not setup)
+                render_start = time.time()
                 self.video_player_manager.update_canvas_frames(
                     self.canvas,
                     is_single_stacked=is_single_stacked,
@@ -660,9 +711,18 @@ class App(TkinterDnD.Tk):
                     main_screen_geometry=main_screen_geometry,
                     external_screen_geometry=external_screen_geometry
                 )
+                render_time = time.time() - render_start
+            else:
+                render_time = 0
+        else:
+            render_time = 0
         
-        # Schedule next update (~15 FPS)
-        self._pil_video_timer_id = self.after(66, self._schedule_pil_video_update)
+        # Record update time
+        self._last_video_update = time.time()
+        
+        # Schedule next update with fixed interval for predictable performance
+        # Using 150ms interval (~6 FPS) which gives more time for UI responsiveness
+        self._pil_video_timer_id = self.after(150, self._schedule_pil_video_update)
     
     def _stop_pil_video_updates(self):
         """Stop the PIL video update timer."""
@@ -1076,8 +1136,25 @@ class App(TkinterDnD.Tk):
                        (external_screen.wallpaper_is_video and external_screen.wallpaper_video_path)
             
             if has_video:
-                # Setup videos with retry - redraw will happen when video starts playing
-                self._try_setup_videos_with_retry(on_video_ready_callback=self._on_video_playing)
+                # Skip video setup if video playback is disabled
+                if not getattr(self, 'video_playback', True):
+                    # Disable video wallpaper mode to show static first frame
+                    self.renderer.screen_manager.main.disable_video_wallpaper()
+                    self.renderer.screen_manager.external.disable_video_wallpaper()
+                    # Clean up any existing video players
+                    if hasattr(self, 'video_player_manager'):
+                        self.video_player_manager.cleanup()
+                    self._stop_pil_video_updates()
+                    # Invalidate cache to force re-render with static wallpaper
+                    self.renderer._invalidate_static_cache()
+                    # Show static first frame via regular wallpaper rendering
+                    self.redraw()
+                else:
+                    # Re-enable video wallpaper mode before setting up videos
+                    self.renderer.screen_manager.main.reenable_video_wallpaper()
+                    self.renderer.screen_manager.external.reenable_video_wallpaper()
+                    # Setup videos with retry - redraw will happen when video starts playing
+                    self._try_setup_videos_with_retry(on_video_ready_callback=self._on_video_playing)
             else:
                 # No videos, redraw immediately
                 self._setup_video_wallpapers()
@@ -1106,9 +1183,10 @@ class App(TkinterDnD.Tk):
                     if bg_id_2:
                         self.canvas.tag_lower(canvas_id, bg_id_2)
         
-        # Force a resize to fix layering - this is a workaround for theme switching
-        self.update_idletasks()
-        self._apply_zoom()
+        # Force redraw like canvas zoom does to fix layering
+        self.renderer._invalidate_static_cache()
+        self.redraw()
+        self._update_video_positions()
     
     def _try_setup_videos_with_retry(self, on_video_ready_callback=None, retry_count=0, max_retries=5):
         """Try to setup videos, retrying if canvas isn't ready yet."""
@@ -1132,7 +1210,9 @@ class App(TkinterDnD.Tk):
         self._setup_video_wallpapers(on_video_ready_callback=on_video_ready_callback)
         
         # Check if videos were actually created (may have failed due to other reasons)
-        if (retry_count < max_retries and 
+        # Skip retry if video playback is disabled (we intentionally didn't create players)
+        if (getattr(self, 'video_playback', True) and 
+            retry_count < max_retries and 
             hasattr(self, 'video_player_manager') and
             len(self.video_player_manager.players) == 0):
             # Videos weren't created, try again
@@ -1148,6 +1228,16 @@ class App(TkinterDnD.Tk):
         Args:
             on_video_ready_callback: Called when video starts playing
         """
+        # Disable video setup entirely if video playback is disabled
+        # Clean up any existing players and use static first frame instead
+        if not getattr(self, 'video_playback', True):
+            # Clean up any existing video players from previous theme
+            if hasattr(self, 'video_player_manager'):
+                self.video_player_manager.cleanup()
+            # Stop any scheduled video updates
+            self._stop_pil_video_updates()
+            return
+        
         main_has_video = False
         external_has_video = False
         
@@ -1176,8 +1266,8 @@ class App(TkinterDnD.Tk):
         if not main_has_video and not external_has_video and on_video_ready_callback:
             on_video_ready_callback()
         
-        # Ensure video update timer is started if videos were created
-        if main_has_video or external_has_video:
+        # Ensure video update timer is started if videos were created (only if video playback is enabled)
+        if (main_has_video or external_has_video) and getattr(self, 'video_playback', True):
             self._schedule_pil_video_update()
             # Lower videos to be behind content
             if hasattr(self.video_player_manager, 'lower_all_videos'):
@@ -2435,6 +2525,7 @@ class App(TkinterDnD.Tk):
         self.config["Settings"]["empty_slots"] = str(getattr(self, "empty_slots", True))
         self.config["Settings"]["remember_last_theme"] = str(self.remember_last_theme)
         self.config["Settings"]["last_theme_path"] = self.last_theme_path or ""
+        self.config["Settings"]["video_playback"] = str(getattr(self, "video_playback", True))
         self.config["Settings"]["bg_scroll_speed"] = str(getattr(self, "bg_scroll_speed", 1))
         self.config["Settings"]["reverse_direction"] = str(getattr(self, "reverse_direction", False))
         
@@ -2628,6 +2719,9 @@ class App(TkinterDnD.Tk):
     
     def _on_canvas_motion(self, event):
         """Track mouse position for magnify window and handle dragging."""
+        # Mark that user is interacting - pause video updates during interaction
+        self._user_interacting = True
+        
         self.renderer.mouse_x = event.x
         self.renderer.mouse_y = event.y
         
@@ -3120,8 +3214,8 @@ class App(TkinterDnD.Tk):
         # Update video positions to match current canvas/zoom state
         self._update_video_positions()
         
-        # Update video frames directly to canvas
-        if hasattr(self, 'video_player_manager'):
+        # Update video frames directly to canvas (only if video playback is enabled)
+        if hasattr(self, 'video_player_manager') and getattr(self, 'video_playback', True):
             # Check if in single-screen stacked mode for ss_mask
             is_single_stacked = (
                 self.renderer.screen_manager.screen_mode == "single" and 
@@ -3166,16 +3260,41 @@ class App(TkinterDnD.Tk):
                 external_screen_geometry=external_screen_geometry
             )
         
-        # Schedule next frame update for PIL videos (only if not already scheduled)
-        if not hasattr(self, '_pil_video_timer_id') or self._pil_video_timer_id is None:
-            self._schedule_pil_video_update()
+        # Schedule next frame update for PIL videos (only if not already scheduled and playback enabled)
+        if getattr(self, 'video_playback', True):
+            if not hasattr(self, '_pil_video_timer_id') or self._pil_video_timer_id is None:
+                self._schedule_pil_video_update()
         
         # Create mask overlay for single-screen stacked mode
         self._update_video_mask_overlay()
         
         # Draw magnify window separately (without canvas zoom, at original position)
         if self.renderer.bezel_edit_mode and getattr(self.renderer, 'magnify_window', True):
-            mag_overlay = self.renderer.get_magnify_window((canvas_w, canvas_h), content_with_bg)
+            # Composite with correct layering: bg -> video -> content
+            # Start with just background (no content)
+            mag_base = bg_image.copy()
+            
+            # Add video frames on top of background
+            if hasattr(self, 'video_player_manager'):
+                for screen_name, player in self.video_player_manager.players.items():
+                    frame = player.get_current_frame() if hasattr(player, 'get_current_frame') else None
+                    if frame:
+                        # Get video position and size for this screen
+                        geometry = self._get_screen_geometry(screen_name)
+                        if geometry:
+                            x, y, w, h = geometry
+                            # Scale to canvas size (same as in redraw)
+                            x = int(x * canvas_zoom)
+                            y = int(y * canvas_zoom)
+                            w = int(w * canvas_zoom)
+                            h = int(h * canvas_zoom)
+                            frame_resized = frame.resize((w, h), Image.Resampling.BILINEAR)
+                            mag_base.paste(frame_resized, (x, y), frame_resized)
+            
+            # Add content (frame + wallpaper, no bg) on top of video
+            mag_base.alpha_composite(clean_content, (0, 0))
+            
+            mag_overlay = self.renderer.get_magnify_window((canvas_w, canvas_h), mag_base)
             if mag_overlay:
                 self.tk_mag_img = ImageTk.PhotoImage(mag_overlay)
                 mag_margin = 20
@@ -3186,6 +3305,9 @@ class App(TkinterDnD.Tk):
                 else:
                     self.canvas.coords(self._canvas_mag_id, mag_x, mag_y)
                     self.canvas.itemconfig(self._canvas_mag_id, image=self.tk_mag_img)
+                
+                # Raise magnify window to top (above bezel) like canvas zoom buttons
+                self.canvas.tag_raise(self._canvas_mag_id)
         elif hasattr(self, "_canvas_mag_id"):
             self.canvas.delete(self._canvas_mag_id)
             delattr(self, "_canvas_mag_id")

@@ -166,6 +166,15 @@ class SettingsDialog(tk.Toplevel):
         )
         remember_check.pack(anchor="w")
         
+        self.video_playback_var = tk.BooleanVar(value=getattr(app, 'video_playback', True))
+        video_playback_check = ttk.Checkbutton(
+            options_frame,
+            text="Video Playback",
+            variable=self.video_playback_var,
+            command=self._on_video_playback_change
+        )
+        video_playback_check.pack(anchor="w")
+        
         bg_frame = ttk.LabelFrame(self.scrollable_frame, text="UI", padding="10")
         bg_frame.pack(fill="x", pady=(0, 10))
         
@@ -393,6 +402,31 @@ class SettingsDialog(tk.Toplevel):
         self.app.remember_var.set(self.remember_var.get())
         self.app.toggle_remember_last_theme()
     
+    def _on_video_playback_change(self):
+        self.app.video_playback = self.video_playback_var.get()
+        
+        if "Settings" not in self.app.config:
+            self.app.config["Settings"] = {}
+        self.app.config["Settings"]["video_playback"] = str(self.video_playback_var.get())
+        with open(self.app.settings_path, "w") as f:
+            self.app.config.write(f)
+        
+        if self.video_playback_var.get():
+            # Re-enable video playback - re-enable video wallpaper mode and setup videos
+            self.app.renderer.screen_manager.main.reenable_video_wallpaper()
+            self.app.renderer.screen_manager.external.reenable_video_wallpaper()
+            # Setup videos
+            self.app._try_setup_videos_with_retry(on_video_ready_callback=self.app._on_video_playing)
+        else:
+            # Disable video playback - show static first frame
+            self.app.renderer.screen_manager.main.disable_video_wallpaper()
+            self.app.renderer.screen_manager.external.disable_video_wallpaper()
+            if hasattr(self.app, 'video_player_manager'):
+                self.app.video_player_manager.cleanup()
+            self.app._stop_pil_video_updates()
+            self.app.renderer._invalidate_static_cache()
+            self.app.redraw()
+    
     def _on_bg_scroll_speed_change(self, value):
         speed = int(float(value))
         self.bg_scroll_speed_var.set(speed)
@@ -431,6 +465,7 @@ class SettingsDialog(tk.Toplevel):
         self.bg_scroll_speed_var.set(getattr(self.app, 'bg_scroll_speed', 1))
         self.bg_scroll_speed_label.config(text=f"{self.app.bg_scroll_speed}")
         self.reverse_direction_var.set(getattr(self.app, 'reverse_direction', False))
+        self.video_playback_var.set(getattr(self.app, 'video_playback', True))
         self._rebuild_accent_color_picker()
     
     def _open_assets_folder(self):

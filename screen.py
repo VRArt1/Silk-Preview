@@ -170,6 +170,21 @@ class Screen:
         self.wallpaper_video_path = None
         self._current_video_frame = None
     
+    def disable_video_wallpaper(self):
+        """Temporarily disable video wallpaper, showing static first frame instead.
+        Stores the video path so it can be restored later.
+        """
+        if self.wallpaper_video_path:
+            self._saved_video_path = self.wallpaper_video_path
+            self.wallpaper_video_path = None
+            self._current_video_frame = None
+    
+    def reenable_video_wallpaper(self):
+        """Re-enable video wallpaper if it was previously disabled."""
+        if hasattr(self, '_saved_video_path') and self._saved_video_path:
+            self.wallpaper_video_path = self._saved_video_path
+            self._saved_video_path = None
+    
     def clear_wallpaper(self):
         """Clear all wallpaper data."""
         self.wallpaper = None

@@ -10,6 +10,10 @@ class PILVideoPlayer:
     
     _cv2_available = None
     
+    # Maximum resolution for video frames (for performance)
+    MAX_VIDEO_WIDTH = 1280
+    MAX_VIDEO_HEIGHT = 720
+    
     def __init__(self, video_path: str, parent_window, geometry: Tuple[int, int, int, int]):
         """
         Initialize PIL-based video player.
@@ -139,9 +143,16 @@ class PILVideoPlayer:
             try:
                 target_w = int(self._target_width) if self._target_width else 0
                 target_h = int(self._target_height) if self._target_height else 0
+                
+                # Cap resolution to max for performance
+                if target_w > self.MAX_VIDEO_WIDTH or target_h > self.MAX_VIDEO_HEIGHT:
+                    scale = min(self.MAX_VIDEO_WIDTH / target_w, self.MAX_VIDEO_HEIGHT / target_h)
+                    target_w = int(target_w * scale)
+                    target_h = int(target_h * scale)
+                
                 if target_w > 0 and target_h > 0:
                     frame_rgba = cv2.resize(frame_rgba, (target_w, target_h), 
-                                          interpolation=cv2.INTER_LINEAR)
+                                          interpolation=cv2.INTER_NEAREST)
             except (TypeError, ValueError):
                 pass
             

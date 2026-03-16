@@ -26,7 +26,7 @@ The intent of this project is to be an accurate theme previewer for the use of g
 ### Cocoon Supported
 
 - **Theme.json + Preview** All fields and images populate within the preview panel following the order shown within the wiki. Colors include preview circles and is collapsible .
-- **Wallpapers** Supports both screens both animated and static. Support for wallpaper aliases and asigning based on theme.json. Video currently only supports first frame.
+- **Wallpapers** Supports both screens both animated, static, and video. Support for wallpaper aliases and asigning based on theme.json.
 - **Smart Folders + Smart Folders/By Platform**  Support for hero, icon, and logo. Properly displayed when selected like on native. (Logo sizing currently inaccurate).
 - **Icon Overlays** Support for mask and overlay. Populated with random image from "assets/games"; insert images there to be randomly chosen. Matching names to console will be chosen first for consoles, allows for multiple options using underscores. I.E. gba.gif & gba_blue.png will be matched to gba icon overlay if exists.
 - **Apps Dock** Similar to game images for icon overlays there is an apps folder for populating image that'll be randomly chosen from to fill your app dock. Images will automatically be masked into circles.
@@ -40,12 +40,10 @@ The intent of this project is to be an accurate theme previewer for the use of g
 ### Cocoon Not Supported
 
 - **SFX/BGM**  
-- **Animated MP4/WEBM** (First frame preview supported)  
 - **Theme.json Colors**   
 - **Hero Masking**  
 - **Hero/Logo Animation**  
 - **Icons On Folders**  
-- **Append Apply Mode**  
 - **Screen Swapping**
 
 ### Controls
@@ -75,6 +73,7 @@ Alternatively install the requirements and run app.py.
 - **Pillow**  
 - **av + ffmpeg**
 - **tkinterdnd2**  
+- **opencv-python**  
 
 ## Support
 
