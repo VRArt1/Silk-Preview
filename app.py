@@ -505,6 +505,12 @@ class App(TkinterDnD.Tk):
                 # Update video player positions if any
                 self._update_video_positions()
                 self.redraw()
+    
+    def _force_redraw(self):
+        """Force cache invalidation and redraw regardless of canvas size."""
+        self.renderer._invalidate_static_cache()
+        self.redraw()
+        self._update_video_positions()
 
     def cycle_bezel(self, event):
         # Get current index
@@ -1188,6 +1194,9 @@ class App(TkinterDnD.Tk):
             self.last_theme_path = str(theme_path)
             if not skip_save:
                 self.save_settings()
+        
+        # Force redraw regardless of canvas size (like canvas zoom does)
+        self._force_redraw()
     
     def _on_video_playing(self):
         """Callback when video starts playing - now safe to draw content."""
@@ -1493,6 +1502,9 @@ class App(TkinterDnD.Tk):
         
         # Trigger resize handling to properly update video positions and caches
         self._do_resize_with_size(self.canvas.winfo_width(), self.canvas.winfo_height())
+        
+        # Force redraw regardless of canvas size (like canvas zoom does)
+        self._force_redraw()
         
     def toggle_corner_hints(self):
         self.renderer.corner_hints_visible = self.corner_hints_var.get()
