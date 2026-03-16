@@ -689,6 +689,19 @@ class App(TkinterDnD.Tk):
                         round(main_screen.w * bezel_scale),
                         round(main_screen.h * bezel_scale)
                     )
+                    # Apply canvas zoom if needed (to match _get_screen_geometry)
+                    canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+                    if canvas_zoom != 1.0:
+                        zoomed_w = int(canvas_w * canvas_zoom)
+                        zoomed_h = int(canvas_h * canvas_zoom)
+                        offset_x = (zoomed_w - canvas_w) // 2
+                        offset_y = (zoomed_h - canvas_h) // 2
+                        main_screen_geometry = (
+                            int(main_screen_geometry[0] * canvas_zoom - offset_x),
+                            int(main_screen_geometry[1] * canvas_zoom - offset_y),
+                            int(main_screen_geometry[2] * canvas_zoom),
+                            int(main_screen_geometry[3] * canvas_zoom)
+                        )
                 
                 # Get external screen geometry for overlap calculation
                 external_screen_geometry = None
@@ -700,6 +713,19 @@ class App(TkinterDnD.Tk):
                         round(ext_screen.w * bezel_scale),
                         round(ext_screen.h * bezel_scale)
                     )
+                    # Apply canvas zoom if needed (to match _get_screen_geometry)
+                    canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+                    if canvas_zoom != 1.0:
+                        zoomed_w = int(canvas_w * canvas_zoom)
+                        zoomed_h = int(canvas_h * canvas_zoom)
+                        offset_x = (zoomed_w - canvas_w) // 2
+                        offset_y = (zoomed_h - canvas_h) // 2
+                        external_screen_geometry = (
+                            int(external_screen_geometry[0] * canvas_zoom - offset_x),
+                            int(external_screen_geometry[1] * canvas_zoom - offset_y),
+                            int(external_screen_geometry[2] * canvas_zoom),
+                            int(external_screen_geometry[3] * canvas_zoom)
+                        )
                 
                 # Measure ONLY the rendering time (not setup)
                 render_start = time.time()
@@ -1461,10 +1487,12 @@ class App(TkinterDnD.Tk):
         if hasattr(self, 'bezel_dropdown'):
             self.bezel_dropdown['values'] = self.bezel_options
         
-        # Also pass max_grid_slots when refreshing
-        self.renderer.load_theme(self.renderer.theme_path, max_grid_items=self.max_grid_slots)
+        # Reload current theme using full method that handles video setup properly
+        self._load_theme_from_path(self.renderer.theme_path, skip_cleanup=False, skip_save=True)
         self.preview_panel.refresh()
-        self.redraw()
+        
+        # Trigger resize handling to properly update video positions and caches
+        self._do_resize_with_size(self.canvas.winfo_width(), self.canvas.winfo_height())
         
     def toggle_corner_hints(self):
         self.renderer.corner_hints_visible = self.corner_hints_var.get()
@@ -3239,6 +3267,19 @@ class App(TkinterDnD.Tk):
                     round(main_screen.w * bezel_scale),
                     round(main_screen.h * bezel_scale)
                 )
+                # Apply canvas zoom if needed (to match _get_screen_geometry)
+                canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+                if canvas_zoom != 1.0:
+                    zoomed_w = int(canvas_w * canvas_zoom)
+                    zoomed_h = int(canvas_h * canvas_zoom)
+                    offset_x = (zoomed_w - canvas_w) // 2
+                    offset_y = (zoomed_h - canvas_h) // 2
+                    main_screen_geometry = (
+                        int(main_screen_geometry[0] * canvas_zoom - offset_x),
+                        int(main_screen_geometry[1] * canvas_zoom - offset_y),
+                        int(main_screen_geometry[2] * canvas_zoom),
+                        int(main_screen_geometry[3] * canvas_zoom)
+                    )
             
             # Get external screen geometry for overlap calculation
             external_screen_geometry = None
@@ -3250,6 +3291,19 @@ class App(TkinterDnD.Tk):
                     round(ext_screen.w * bezel_scale),
                     round(ext_screen.h * bezel_scale)
                 )
+                # Apply canvas zoom if needed (to match _get_screen_geometry)
+                canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
+                if canvas_zoom != 1.0:
+                    zoomed_w = int(canvas_w * canvas_zoom)
+                    zoomed_h = int(canvas_h * canvas_zoom)
+                    offset_x = (zoomed_w - canvas_w) // 2
+                    offset_y = (zoomed_h - canvas_h) // 2
+                    external_screen_geometry = (
+                        int(external_screen_geometry[0] * canvas_zoom - offset_x),
+                        int(external_screen_geometry[1] * canvas_zoom - offset_y),
+                        int(external_screen_geometry[2] * canvas_zoom),
+                        int(external_screen_geometry[3] * canvas_zoom)
+                    )
             
             self.video_player_manager.update_canvas_frames(
                 self.canvas,
