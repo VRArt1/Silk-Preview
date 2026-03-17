@@ -131,7 +131,6 @@ class Renderer:
         device_file = ASSETS_DIR / "bezels" / device_name / "device.json"
         
         device = None
-        needs_save = False
         
         if device_file.exists():
             try:
@@ -177,7 +176,6 @@ class Renderer:
                     main["y_pct"] = round(pct[1], 4)
                     main["w_pct"] = round(pct[2], 4)
                     main["h_pct"] = round(pct[3], 4)
-                    needs_save = True
                 else:
                     # Already percentages or has _pct versions
                     pass
@@ -190,15 +188,6 @@ class Renderer:
                     ext["y_pct"] = round(pct[1], 4)
                     ext["w_pct"] = round(pct[2], 4)
                     ext["h_pct"] = round(pct[3], 4)
-                    needs_save = True
-        
-        # Save converted percentages back to device.json (quiet conversion - users still see pixels in file)
-        if needs_save:
-            try:
-                with open(device_file, 'w') as f:
-                    json.dump(device, f, indent=4)
-            except Exception as e:
-                print(f"Failed to save converted device.json: {e}")
         
         # Apply screen positions using percentages
         if "screens" in device:
@@ -248,7 +237,6 @@ class Renderer:
                 grid["y_offset_pct"] = round(grid.get("y_offset", -40) / frame_h, 4) if frame_h else 0
                 grid["width_pct"] = round(grid.get("width", 400) / frame_w, 4) if frame_w else 0
                 grid["height_pct"] = round(grid.get("height", 50) / frame_h, 4) if frame_h else 0
-                needs_save = True
             
             # Apply settings - use percentages if available
             if "width_pct" in grid:
@@ -446,18 +434,28 @@ class Renderer:
             # Handle both percentage and pixel keys
             frame_w = Screen.FRAME_WIDTH
             frame_h = Screen.FRAME_HEIGHT
-            self.app_grid_x_offset = self._temp_app_grid.get("x_offset_pct", 0)
-            if isinstance(self.app_grid_x_offset, float):
-                self.app_grid_x_offset = round(self.app_grid_x_offset * frame_w) if frame_w else 0
-            self.app_grid_y_offset = self._temp_app_grid.get("y_offset_pct", -0.04)
-            if isinstance(self.app_grid_y_offset, float):
-                self.app_grid_y_offset = round(self.app_grid_y_offset * frame_h) if frame_h else 0
-            self.app_grid_width = self._temp_app_grid.get("width_pct", 0.455)
-            if isinstance(self.app_grid_width, float):
-                self.app_grid_width = round(self.app_grid_width * frame_w) if frame_w else 0
-            self.app_grid_icon_size = self._temp_app_grid.get("height_pct", 0.048)
-            if isinstance(self.app_grid_icon_size, float):
-                self.app_grid_icon_size = round(self.app_grid_icon_size * frame_h) if frame_h else 0
+            
+            # Check for percentage keys first
+            if "x_offset_pct" in self._temp_app_grid:
+                self.app_grid_x_offset = self._temp_app_grid.get("x_offset_pct", 0)
+                if isinstance(self.app_grid_x_offset, float):
+                    self.app_grid_x_offset = round(self.app_grid_x_offset * frame_w) if frame_w else 0
+                self.app_grid_y_offset = self._temp_app_grid.get("y_offset_pct", -0.04)
+                if isinstance(self.app_grid_y_offset, float):
+                    self.app_grid_y_offset = round(self.app_grid_y_offset * frame_h) if frame_h else 0
+                self.app_grid_width = self._temp_app_grid.get("width_pct", 0.455)
+                if isinstance(self.app_grid_width, float):
+                    self.app_grid_width = round(self.app_grid_width * frame_w) if frame_w else 0
+                self.app_grid_icon_size = self._temp_app_grid.get("height_pct", 0.048)
+                if isinstance(self.app_grid_icon_size, float):
+                    self.app_grid_icon_size = round(self.app_grid_icon_size * frame_h) if frame_h else 0
+            else:
+                # Fall back to pixel keys
+                self.app_grid_x_offset = self._temp_app_grid.get("x_offset", 0)
+                self.app_grid_y_offset = self._temp_app_grid.get("y_offset", -40)
+                self.app_grid_width = self._temp_app_grid.get("width", 400)
+                self.app_grid_icon_size = self._temp_app_grid.get("icon_size", 50)
+            
             self.app_grid_icon_scale = self._temp_app_grid.get("icon_scale", 1.0)
         
         # Save to JSON
@@ -1344,39 +1342,23 @@ class Renderer:
             return
         
         # Get sizes from settings
-        # base_icon_size is the slot size for grid layout
+        # base_icon_size is the slot size for grid layout (vertical space)
         # icon_size is the actual rendered size (affected by icon_scale)
         base_icon_size = round(self.app_grid_icon_size * scale)
         icon_size = round(base_icon_size * self.app_grid_icon_scale)
         grid_width = round(self.app_grid_width * scale)
         y_offset = round(self.app_grid_y_offset * scale)
         
-        # Constrain grid_width to fit within screen
-        grid_width = min(grid_width, ext_w)
-        
         # Calculate the region position (always centered horizontally)
         # Grid area uses base_icon_size for layout
+        x_offset = round(self.app_grid_x_offset * scale)
         center_x = ext_x + ext_w // 2
-        grid_left = center_x - grid_width // 2
+        grid_left = center_x - grid_width // 2 + x_offset
         grid_right = grid_left + grid_width
         
         # Position from bottom with y_offset
         grid_bottom = ext_y + ext_h - y_offset
-        grid_top = grid_bottom - base_icon_size  # Grid area height uses base size
-        
-        # Constrain grid to stay within screen bounds
-        # Top must not go above screen top
-        if grid_top < ext_y:
-            grid_top = ext_y
-            grid_bottom = grid_top + base_icon_size
-        # Bottom must not go below screen bottom
-        if grid_bottom > ext_y + ext_h:
-            grid_bottom = ext_y + ext_h
-            grid_top = grid_bottom - base_icon_size
-            # If icon is too tall, adjust both
-            if grid_top < ext_y:
-                grid_top = ext_y
-                base_icon_size = grid_bottom - grid_top
+        grid_top = grid_bottom - base_icon_size  # Grid area height uses base_icon_size
         
         # Store for debug output
         self._app_grid_debug = {
@@ -3509,19 +3491,19 @@ class Renderer:
             top_w = round(main_screen.w * scale)
             top_h = round(main_screen.h * scale)
 
-            # Hero - fit to height, center horizontally, can be cut off on sides
+            # Hero - fit to width, center vertically (rendered first, behind logo)
             if top_screen_overlay.get("hero"):
                 hero = top_screen_overlay["hero"]
                 hero_w, hero_h = hero.size
                 
-                # Scale to fit height
-                scale_hero = top_h / hero_h
-                new_w = int(hero_w * scale_hero)
-                new_h = top_h
+                # Scale to fit width
+                scale_hero = top_w / hero_w
+                new_w = top_w
+                new_h = int(hero_h * scale_hero)
                 
-                # Center horizontally (can go off screen if too wide)
-                hero_x = top_x + (top_w - new_w) // 2
-                hero_y = top_y
+                # Center vertically
+                hero_x = top_x
+                hero_y = top_y + (top_h - new_h) // 2
                 
                 # Resize hero
                 key = (id(hero), new_w, new_h)
@@ -3541,7 +3523,7 @@ class Renderer:
                 masked_hero = Image.composite(hero_resized, Image.new("RGBA", (new_w, new_h), 0), mask)
                 base.alpha_composite(masked_hero, (hero_x, hero_y))
 
-            # Logo
+            # Logo (rendered after hero, on top)
             if top_screen_overlay.get("logo"):
                 logo = top_screen_overlay["logo"]
 
@@ -3607,9 +3589,8 @@ class Renderer:
                         base.alpha_composite(masked_logo, (paste_x, paste_y))
                     else:
                         base.alpha_composite(resized, (paste_x, paste_y))
-                
-        # Render main screen on top in single screen STACKED mode only (so it can slide over grid)
-        # In single screen dual mode (stacked=False), top screen is off-screen and shouldn't render
+
+        # Render main screen on top in single screen STACKED mode only
         if (self.screen_manager.screen_mode == "single" and 
             self._single_screen_stacked and 
             main_screen.w > 0 and main_screen.h > 0):
@@ -3630,11 +3611,9 @@ class Renderer:
                 mask_key = (id(self.ss_mask), main_w, main_h)
                 screen_mask = self._resize_cache.get(mask_key)
                 if screen_mask is None:
-                    # Use LANCZOS for better quality with gradients
                     screen_mask = self.ss_mask.resize((main_w, main_h), Image.Resampling.LANCZOS)
-                    # Extract alpha channel as mask (preserves gradient transparency)
                     if screen_mask.mode == "RGBA":
-                        screen_mask = screen_mask.split()[3]  # Get alpha channel
+                        screen_mask = screen_mask.split()[3]
                     elif screen_mask.mode != "L":
                         screen_mask = screen_mask.convert("L")
                     self._resize_cache[mask_key] = screen_mask
@@ -3642,7 +3621,6 @@ class Renderer:
                 # Create bottom screen mask for clipping
                 bottom_mask = Image.new("L", (main_w, main_h), 0)
                 draw = ImageDraw.Draw(bottom_mask)
-                # Calculate overlap area with bottom screen
                 overlap_x1 = max(0, ext_x - main_x)
                 overlap_y1 = max(0, ext_y - main_y)
                 overlap_x2 = min(main_w, ext_x + ext_w - main_x)
@@ -3650,19 +3628,40 @@ class Renderer:
                 if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
                     draw.rectangle([overlap_x1, overlap_y1, overlap_x2, overlap_y2], fill=255)
                 
-                # Combine masks using multiplication for smooth transitions
-                # ss_mask provides the shape with soft edges
-                # bottom_mask clips to the visible overlap area
+                # Combine masks
                 combined_mask = ImageChops.multiply(screen_mask, bottom_mask)
                 
                 # Resize wallpaper to fit
                 wallpaper_resized = main_wallpaper.resize((main_w, main_h), Image.Resampling.BILINEAR)
-                # Apply combined mask
                 masked_wallpaper = Image.composite(wallpaper_resized, Image.new("RGBA", (main_w, main_h), 0), combined_mask)
                 base.alpha_composite(masked_wallpaper, (main_x, main_y))
             
             # Draw hero/logo on top of wallpaper in single screen mode
             if top_screen_overlay and self.ss_mask:
+                # Get ss_mask resized to main screen size
+                mask_key = (id(self.ss_mask), main_w, main_h)
+                screen_mask = self._resize_cache.get(mask_key)
+                if screen_mask is None:
+                    screen_mask = self.ss_mask.resize((main_w, main_h), Image.Resampling.LANCZOS)
+                    if screen_mask.mode == "RGBA":
+                        screen_mask = screen_mask.split()[3]
+                    elif screen_mask.mode != "L":
+                        screen_mask = screen_mask.convert("L")
+                    self._resize_cache[mask_key] = screen_mask
+                
+                # Create bottom screen mask for clipping
+                bottom_mask = Image.new("L", (main_w, main_h), 0)
+                draw = ImageDraw.Draw(bottom_mask)
+                overlap_x1 = max(0, ext_x - main_x)
+                overlap_y1 = max(0, ext_y - main_y)
+                overlap_x2 = min(main_w, ext_x + ext_w - main_x)
+                overlap_y2 = min(main_h, ext_y + ext_h - main_y)
+                if overlap_x2 > overlap_x1 and overlap_y2 > overlap_y1:
+                    draw.rectangle([overlap_x1, overlap_y1, overlap_x2, overlap_y2], fill=255)
+                
+                # Combine masks
+                combined_mask = ImageChops.multiply(screen_mask, bottom_mask)
+                
                 # Calculate visible overlap area
                 visible_x1 = max(main_x, ext_x)
                 visible_y1 = max(main_y, ext_y)
@@ -3673,7 +3672,7 @@ class Renderer:
                 visible_h = visible_y2 - visible_y1
                 
                 if visible_w > 0 and visible_h > 0:
-                    # Hero - fit to visible WIDTH, center vertically within visible area
+                    # Hero - fit to visible WIDTH at main screen position, then apply combined mask (rendered first, behind logo)
                     if top_screen_overlay.get("hero"):
                         hero = top_screen_overlay["hero"]
                         hero_w, hero_h = hero.size
@@ -3683,11 +3682,10 @@ class Renderer:
                         new_w = visible_w
                         new_h = int(hero_h * scale_hero)
                         
-                        # Only resize if dimensions are valid
                         if new_w > 0 and new_h > 0:
-                            # Center vertically within visible area
-                            hero_x = visible_x1
-                            hero_y = visible_y1 + (visible_h - new_h) // 2
+                            # Position at main screen origin (not visible origin), will be masked by combined_mask
+                            hero_x = main_x
+                            hero_y = main_y + (main_h - new_h) // 2
                             
                             key = (id(hero), new_w, new_h)
                             hero_resized = self._resize_cache.get(key)
@@ -3695,18 +3693,21 @@ class Renderer:
                                 hero_resized = hero.resize((new_w, new_h), Image.Resampling.BILINEAR)
                                 self._resize_cache[key] = hero_resized
                             
-                            # Clip hero to visible screen bounds using combined mask
-                            mask = Image.new("L", (new_w, new_h), 0)
-                            draw = ImageDraw.Draw(mask)
-                            clip_x1 = max(0, visible_x1 - hero_x)
-                            clip_y1 = max(0, visible_y1 - hero_y)
-                            clip_x2 = min(new_w, visible_x1 + visible_w - hero_x)
-                            clip_y2 = min(new_h, visible_y1 + visible_h - hero_y)
-                            draw.rectangle([clip_x1, clip_y1, clip_x2, clip_y2], fill=255)
-                            masked_hero = Image.composite(hero_resized, Image.new("RGBA", (new_w, new_h), 0), mask)
-                            base.alpha_composite(masked_hero, (hero_x, hero_y))
+                            # Create hero at main screen size to apply combined_mask properly
+                            hero_full = Image.new("RGBA", (main_w, main_h), 0)
+                            hero_full.paste(hero_resized, (hero_x - main_x, hero_y - main_y))
+                            
+                            # Apply combined mask
+                            hero_masked = Image.composite(hero_full, Image.new("RGBA", (main_w, main_h), 0), combined_mask)
+                            
+                            # Crop to visible area and paste
+                            crop_x = visible_x1 - main_x
+                            crop_y = visible_y1 - main_y
+                            hero_cropped = hero_masked.crop((crop_x, crop_y, crop_x + visible_w, crop_y + visible_h))
+                            
+                            base.alpha_composite(hero_cropped, (visible_x1, visible_y1))
                     
-                    # Logo
+                    # Logo (rendered after hero, on top)
                     if top_screen_overlay.get("logo"):
                         logo = top_screen_overlay["logo"]
                         
@@ -3798,21 +3799,14 @@ class Renderer:
                 self._draw_border(base, ext_rect, (50, 205, 50, 255), 3)
             
             # Draw app grid handles (red) - but not in magnify window area
+            # Note: Grid handles are added to _screen_handles AFTER screen handles are set below
             if not skip_handles and hasattr(self, '_app_grid_debug') and self._app_grid_debug:
                 grid_left = self._app_grid_debug.get('grid_left')
                 grid_right = self._app_grid_debug.get('grid_right')
                 grid_top = self._app_grid_debug.get('grid_top')
                 grid_bottom = self._app_grid_debug.get('grid_bottom')
                 if grid_left is not None:
-                    # Check if app grid area overlaps with magnify window (bottom-right corner)
-                    mag_size = self.magnify_size
-                    mag_margin = 20
-                    mag_x = canvas_w - mag_size - mag_margin
-                    mag_y = canvas_h - mag_size - mag_margin
-                    # Only draw handles if they're outside the magnify window
-                    if not (grid_left < mag_x + mag_size and grid_right > mag_x and 
-                            grid_top < mag_y + mag_size and grid_bottom > mag_y):
-                        self._render_drag_handles(base, grid_left, grid_right, grid_top, grid_bottom)
+                    self._render_drag_handles(base, grid_left, grid_right, grid_top, grid_bottom)
         
         # Draw screen handles in bezel edit mode
         if self.bezel_edit_mode and not skip_handles:
@@ -3863,6 +3857,20 @@ class Renderer:
             self._draw_handle(base, ex + ew//2, ey + eh, (50, 205, 50, 255), 6)
             self._draw_handle(base, ex, ey + eh//2, (50, 205, 50, 255), 6)
             self._draw_handle(base, ex + ew, ey + eh//2, (50, 205, 50, 255), 6)
+            
+            # Add app grid handles to _screen_handles for click detection (must be after screen handles are set)
+            if hasattr(self, '_app_grid_debug') and self._app_grid_debug:
+                grid_left = self._app_grid_debug.get('grid_left')
+                grid_right = self._app_grid_debug.get('grid_right')
+                grid_top = self._app_grid_debug.get('grid_top')
+                grid_bottom = self._app_grid_debug.get('grid_bottom')
+                if grid_left is not None:
+                    self._screen_handles['grid'] = [
+                        ('top', (grid_left + grid_right) // 2, grid_top),
+                        ('bottom', (grid_left + grid_right) // 2, grid_bottom),
+                        ('left', grid_left, (grid_top + grid_bottom) // 2),
+                        ('right', grid_right, (grid_top + grid_bottom) // 2),
+                    ]
         
         # Cache clean content (without borders/handles) for magnify window
         if wants_clean:
@@ -3931,13 +3939,23 @@ class Renderer:
             grid_top = self._app_grid_debug.get('grid_top')
             grid_bottom = self._app_grid_debug.get('grid_bottom')
             if grid_left is not None:
-                mag_size = self.magnify_size
-                mag_margin = 20
-                mag_x = canvas_w - mag_size - mag_margin
-                mag_y = canvas_h - mag_size - mag_margin
-                if not (grid_left < mag_x + mag_size and grid_right > mag_x and 
-                        grid_top < mag_y + mag_size and grid_bottom > mag_y):
-                    self._render_drag_handles(base, grid_left, grid_right, grid_top, grid_bottom)
+                # Draw red rectangle around app grid area (x, y, w, h format)
+                rect_x = grid_left
+                rect_y = grid_top - 5
+                rect_w = grid_right - grid_left
+                rect_h = (grid_bottom + 5) - (grid_top - 5)
+                self._draw_border(base, (rect_x, rect_y, rect_w, rect_h), (255, 0, 0, 255), 3)
+                
+                # Set grid handles for click detection
+                self._screen_handles['grid'] = [
+                    ('top', (grid_left + grid_right) // 2, grid_top),
+                    ('bottom', (grid_left + grid_right) // 2, grid_bottom),
+                    ('left', grid_left, (grid_top + grid_bottom) // 2),
+                    ('right', grid_right, (grid_top + grid_bottom) // 2),
+                ]
+                
+                # Draw drag handles
+                self._render_drag_handles(base, grid_left, grid_right, grid_top, grid_bottom)
         
         # Draw screen handles
         show_main_handles = self.screen_manager.screen_mode != "single"

@@ -418,7 +418,7 @@ class App(TkinterDnD.Tk):
         self.canvas.bind("<Button-1>", self.on_canvas_left_click)
         self.canvas.bind("<Button-3>", self.on_canvas_right_click)
         self.canvas.bind("<Motion>", self._on_canvas_motion)  # Track mouse position for magnify window
-        self.canvas.bind("<B1-Motion>", self._on_canvas_drag)  # Mouse drag
+        self.canvas.bind("<B1-Motion>", self._on_canvas_motion)  # Mouse drag
         self.canvas.bind("<Enter>", self._on_canvas_enter)  # Mouse enters canvas
         self.canvas.bind("<Leave>", self._on_canvas_leave)  # Mouse leaves canvas
         self.canvas.bind("<ButtonRelease-1>", self.on_canvas_left_release)
@@ -2320,7 +2320,7 @@ class App(TkinterDnD.Tk):
             new_offset = self.app_grid_y_offset + int(delta)
             # Grid must stay within screen (0 to screen_h - icon_size)
             min_offset = -screen_h + self.app_grid_icon_size + 10  # Allow going up to near top
-            max_offset = 10  # Small padding from bottom
+            max_offset = screen_h - 10  # Allow going near bottom
             self.app_grid_y_offset = max(min_offset, min(max_offset, new_offset))
             self.renderer.set_temp_app_grid("y_offset", self.app_grid_y_offset)
             self.y_offset_var.set(str(self.app_grid_y_offset))
@@ -2783,20 +2783,43 @@ class App(TkinterDnD.Tk):
             
             handle_type = self._dragging_handle
             
-            # Handle app grid dragging - scale delta by canvas_zoom
+            # Handle app grid dragging - scale delta by canvas_zoom AND bezel_fit_scale
             if handle_type.startswith('grid_'):
                 start = self._drag_start_values
                 canvas_zoom = getattr(self, 'canvas_zoom', 1.0)
-                scaled_dx = dx / canvas_zoom if canvas_zoom > 0 else dx
-                scaled_dy = dy / canvas_zoom if canvas_zoom > 0 else dy
+                bezel_scale = getattr(renderer, '_bezel_fit_scale', 1.0)
+                scale_factor = canvas_zoom * bezel_scale
+                scaled_dx = dx / scale_factor if scale_factor > 0 else dx
+                scaled_dy = dy / scale_factor if scale_factor > 0 else dy
                 if handle_type == 'grid_top':
-                    renderer.app_grid_y_offset = start['y_offset'] + scaled_dy
+                    # Resize height by moving top edge - bottom stays fixed, grid expands upward
+                    new_size = start['icon_size'] - scaled_dy
+                    renderer.app_grid_icon_size = max(20, new_size)
+                    renderer.set_temp_app_grid("icon_size", max(20, new_size))
+                    self.icon_size_var.set(str(max(20, new_size)))
                 elif handle_type == 'grid_bottom':
-                    renderer.app_grid_y_offset = start['y_offset'] + scaled_dy
+                    # Resize height by moving bottom edge - adjust y_offset to keep top edge fixed
+                    new_size = start['icon_size'] + scaled_dy
+                    renderer.app_grid_icon_size = max(20, new_size)
+                    renderer.set_temp_app_grid("icon_size", max(20, new_size))
+                    self.icon_size_var.set(str(max(20, new_size)))
+                    # Adjust y_offset to keep top edge fixed (move grid down)
+                    new_y_offset = start['y_offset'] - scaled_dy
+                    renderer.app_grid_y_offset = new_y_offset
+                    renderer.set_temp_app_grid("y_offset", new_y_offset)
+                    self.y_offset_var.set(str(new_y_offset))
                 elif handle_type == 'grid_left':
-                    renderer.app_grid_x_offset = start['x_offset'] + scaled_dx
+                    # Left handle: dragging left expands, dragging right shrinks
+                    new_width = start['grid_width'] - 2 * scaled_dx
+                    renderer.app_grid_width = max(50, new_width)
+                    renderer.set_temp_app_grid("width", max(50, new_width))
+                    self.grid_width_var.set(str(max(50, new_width)))
                 elif handle_type == 'grid_right':
-                    renderer.app_grid_x_offset = start['x_offset'] + scaled_dx
+                    # Right handle: dragging right expands, dragging left shrinks
+                    new_width = start['grid_width'] + 2 * scaled_dx
+                    renderer.app_grid_width = max(50, new_width)
+                    renderer.set_temp_app_grid("width", max(50, new_width))
+                    self.grid_width_var.set(str(max(50, new_width)))
                 renderer._invalidate_static_cache()
                 self.redraw()
             
@@ -3006,6 +3029,14 @@ class App(TkinterDnD.Tk):
                 content_y = (y - center_y) / canvas_zoom + center_y if canvas_zoom > 0 else y
                 
                 if abs(content_x - hx) <= handle_size and abs(content_y - hy) <= handle_size:
+                    # Handle app grid handles differently
+                    if screen_name == 'grid':
+                        return (f'grid_{handle_type}', {
+                            'x_offset': renderer.app_grid_x_offset,
+                            'y_offset': renderer.app_grid_y_offset,
+                            'grid_width': renderer.app_grid_width,
+                            'icon_size': renderer.app_grid_icon_size,
+                        })
                     return (f'{screen_name}_{handle_type}', {
                         'x': renderer.screen_manager.main.x if screen_name == 'main' else renderer.screen_manager.external.x,
                         'y': renderer.screen_manager.main.y if screen_name == 'main' else renderer.screen_manager.external.y,

@@ -1,0 +1,25 @@
+{
+  "display_name": "Pocket S2",
+  "screen_amount": 1,
+  "screens": {
+    "main": {
+      "x": 181,
+      "y": -139,
+      "w": 586,
+      "h": 330
+    },
+    "external": {
+      "x": 181,
+      "y": 29,
+      "w": 587,
+      "h": 330
+    }
+  },
+  "app_grid": {
+    "x_offset": 0,
+    "y_offset": 3,
+    "width": 152,
+    "height": 22,
+    "icon_scale": 1.0
+  }
+}
