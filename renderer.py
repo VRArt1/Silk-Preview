@@ -4,8 +4,15 @@ import random
 import math
 import av
 from typing import Tuple
+from datetime import datetime
 from PIL import Image, ImageSequence, ImageDraw, ImageOps, ImageChops
 import time
+
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
 
 from screen import ScreenManager, MainScreen, ExternalScreen, Screen
 
@@ -15,6 +22,667 @@ BASE_DIR = Path(__file__).parent
 ASSETS_DIR = BASE_DIR / "assets"
 PLACEHOLDER_DIR = BASE_DIR / "Placeholder Assets"
 GAMES_DIR = ASSETS_DIR / "games"
+
+SOUND_FORMATS = (".ogg", ".mp3", ".wav")
+
+
+class SoundManager:
+    _initialized = False
+    _mixer_initialized = False
+
+    def __init__(self):
+        self._sound_cache = {}
+        self._theme_sounds_loaded = False
+        self._current_theme_path = None
+
+        self._master_volume = 1.0
+        self._sfx_volume = 1.0
+        self._music_volume = 1.0
+
+        self._theme_sfx_volume = 1.0
+        self._theme_music_volume = 1.0
+        self._theme_sfx_volume_set = False
+        self._theme_music_volume_set = False
+
+        if not SoundManager._initialized and PYGAME_AVAILABLE:
+            try:
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+                SoundManager._mixer_initialized = True
+            except Exception as e:
+                print(f"[SoundManager] Failed to initialize mixer: {e}")
+                SoundManager._mixer_initialized = False
+            SoundManager._initialized = True
+
+    def load_theme_sounds(self, theme_path: Path):
+        """Load sounds for the theme, with fallback to placeholder assets."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+
+        self._sound_cache.clear()
+        self._theme_sounds_loaded = True
+        self._current_theme_path = theme_path
+
+        sounds_dir = theme_path / "sounds"
+        placeholder_sounds_dir = PLACEHOLDER_DIR / "sounds"
+
+        # First, collect all unique sound names from both theme and fallback
+        all_sound_names = set()
+
+        # Get sounds from theme
+        if sounds_dir.exists():
+            for sound_file in sounds_dir.glob("*"):
+                if sound_file.suffix.lower() in SOUND_FORMATS:
+                    all_sound_names.add(sound_file.stem.lower())
+
+        # Get sounds from fallback
+        if placeholder_sounds_dir.exists():
+            for sound_file in placeholder_sounds_dir.glob("*"):
+                if sound_file.suffix.lower() in SOUND_FORMATS:
+                    all_sound_names.add(sound_file.stem.lower())
+
+        # Now load each sound: theme version first, then fallback if needed
+        for sound_name in sorted(all_sound_names):
+            self._load_sound_with_fallback(sound_name, sounds_dir, placeholder_sounds_dir)
+
+    def _load_sound_with_fallback(self, sound_name: str, theme_sounds_dir: Path, fallback_dir: Path):
+        """Load a sound - theme version takes priority over fallback."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+
+        # Try theme sound first
+        if theme_sounds_dir.exists():
+            for ext in SOUND_FORMATS:
+                theme_path = theme_sounds_dir / f"{sound_name}{ext}"
+                if theme_path.exists():
+                    try:
+                        sound = pygame.mixer.Sound(str(theme_path))
+                        self._sound_cache[sound_name] = sound
+                        return
+                    except Exception:
+                        pass
+
+        # Fall back to placeholder if theme sound wasn't found
+        if fallback_dir.exists():
+            for ext in SOUND_FORMATS:
+                fallback_path = fallback_dir / f"{sound_name}{ext}"
+                if fallback_path.exists():
+                    try:
+                        sound = pygame.mixer.Sound(str(fallback_path))
+                        self._sound_cache[sound_name] = sound
+                        return
+                    except Exception:
+                        pass
+
+    def _load_sound_from_dir(self, sound_name: str, sounds_dir: Path):
+        """Load a sound from a specific directory."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+
+        for ext in SOUND_FORMATS:
+            sound_path = sounds_dir / f"{sound_name}{ext}"
+            if sound_path.exists():
+                try:
+                    sound = pygame.mixer.Sound(str(sound_path))
+                    self._sound_cache[sound_name] = sound
+                    return
+                except Exception:
+                    pass
+
+    def play(self, sound_name: str):
+        """Play a sound by name."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+
+        sound = self._sound_cache.get(sound_name.lower())
+        if sound:
+            if self._theme_sfx_volume_set:
+                effective_volume = self._master_volume * self._theme_sfx_volume
+            else:
+                effective_volume = self._master_volume * self._sfx_volume
+            sound.set_volume(effective_volume)
+            sound.play()
+
+    def set_theme_sfx_volume(self, volume: float):
+        """Set the theme-defined SFX volume (0.0 to 1.0)."""
+        self._theme_sfx_volume = max(0.0, min(1.0, volume))
+        self._theme_sfx_volume_set = True
+
+    def set_theme_music_volume(self, volume: float):
+        """Set the theme-defined music volume (0.0 to 1.0)."""
+        self._theme_music_volume = max(0.0, min(1.0, volume))
+        self._theme_music_volume_set = True
+        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
+            try:
+                if self._theme_music_volume_set:
+                    pygame.mixer.music.set_volume(self._master_volume * self._theme_music_volume)
+                else:
+                    pygame.mixer.music.set_volume(self._master_volume * self._music_volume)
+            except:
+                pass
+
+    def set_master_volume(self, volume: float):
+        """Set master volume (0.0 to 1.0)."""
+        self._master_volume = max(0.0, min(1.0, volume))
+
+    def get_master_volume(self) -> float:
+        return self._master_volume
+
+    def set_sfx_volume(self, volume: float):
+        """Set SFX volume (0.0 to 1.0)."""
+        self._sfx_volume = max(0.0, min(1.0, volume))
+
+    def get_sfx_volume(self) -> float:
+        return self._sfx_volume
+
+    def set_music_volume(self, volume: float):
+        """Set music volume (0.0 to 1.0)."""
+        self._music_volume = max(0.0, min(1.0, volume))
+        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
+            try:
+                if self._theme_music_volume_set:
+                    pygame.mixer.music.set_volume(self._master_volume * self._theme_music_volume)
+                else:
+                    pygame.mixer.music.set_volume(self._master_volume * self._music_volume)
+            except:
+                pass
+
+    def get_music_volume(self) -> float:
+        return self._music_volume
+
+    def get_theme_music_volume(self) -> float:
+        return self._theme_music_volume
+
+    def play_music(self, filepath: str, loops: int = -1):
+        """Play background music."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+
+        try:
+            pygame.mixer.music.load(filepath)
+            if self._theme_music_volume_set:
+                pygame.mixer.music.set_volume(self._master_volume * self._theme_music_volume)
+            else:
+                pygame.mixer.music.set_volume(self._master_volume * self._music_volume)
+            pygame.mixer.music.play(loops=loops)
+        except Exception as e:
+            print(f"[SoundManager] Failed to play music: {e}")
+
+    def stop_music(self):
+        """Stop background music."""
+        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
+            try:
+                pygame.mixer.music.stop()
+            except:
+                pass
+
+    @property
+    def is_available(self) -> bool:
+        return PYGAME_AVAILABLE and SoundManager._mixer_initialized
+
+
+class MusicManager:
+    _initialized = False
+    _check_timer_id = None
+
+    def __init__(self, sound_manager: SoundManager):
+        self._sound_manager = sound_manager
+        self._theme_base_path = None
+        self._placeholder_base_path = None
+        self._theme_music_path = None
+        self._placeholder_music_path = None
+        
+        self._mode = "DISABLED"  # TIME, PLAYLIST, DISABLED
+        self._playback_mode = "IN ORDER"  # IN ORDER, SHUFFLE
+        self._time_schedule = []  # List of (hour, minute, track_path)
+        self._playlist = []  # List of track paths
+        self._current_track_index = 0
+        self._shuffled_playlist = []
+        
+        self._last_schedule_check_hour = -1
+        self._theme_music_volume = 1.0
+        self._theme_music_volume_set = False
+        
+        self._paused = False
+        self._user_paused = False
+        self._user_shuffle = False
+        self._current_track_name = ""
+        
+        self._check_timer = None
+
+    def load_from_theme(self, theme_path: Path, placeholder_path: Path):
+        """Load music configuration from theme.json with fallback to placeholder."""
+        self.stop()
+        self._cancel_schedule_timer()
+        
+        self._theme_base_path = theme_path
+        self._placeholder_base_path = placeholder_path
+        self._theme_music_path = theme_path / "music"
+        self._placeholder_music_path = placeholder_path / "music"
+        
+        # Load theme.json from both theme and placeholder
+        theme_data = {}
+        placeholder_data = {}
+        
+        theme_json = theme_path / "theme.json"
+        if theme_json.exists():
+            try:
+                with open(theme_json, "r", encoding="utf-8") as f:
+                    theme_data = json.load(f)
+            except Exception:
+                pass
+        
+        placeholder_json = placeholder_path / "theme.json"
+        if placeholder_json.exists():
+            try:
+                with open(placeholder_json, "r", encoding="utf-8") as f:
+                    placeholder_data = json.load(f)
+            except Exception:
+                pass
+        
+        # Determine mode: use theme if defined, else fallback to placeholder
+        if "music_mode" in theme_data:
+            self._mode = theme_data.get("music_mode", "DISABLED")
+        elif "music_mode" in placeholder_data:
+            self._mode = placeholder_data.get("music_mode", "DISABLED")
+        else:
+            self._mode = "DISABLED"
+        
+        # Determine playback mode
+        if "music_playback_mode" in theme_data:
+            self._playback_mode = theme_data.get("music_playback_mode", "IN ORDER")
+        elif "music_playback_mode" in placeholder_data:
+            self._playback_mode = placeholder_data.get("music_playback_mode", "IN ORDER")
+        else:
+            self._playback_mode = "IN ORDER"
+        
+        # Sync user shuffle with playback mode from theme
+        self._user_shuffle = (self._playback_mode == "SHUFFLE")
+        
+        # Parse time schedule
+        self._time_schedule = []
+        time_schedule_str = theme_data.get("music_time_schedule", "") or placeholder_data.get("music_time_schedule", "")
+        if time_schedule_str:
+            self._parse_time_schedule(time_schedule_str)
+        
+        # Parse playlist
+        self._playlist = []
+        playlist_str = theme_data.get("music_playlist", "") or placeholder_data.get("music_playlist", "")
+        if playlist_str:
+            self._parse_playlist(playlist_str, theme_path, placeholder_path)
+        
+        # Determine volume: use theme if set, else fallback to placeholder, else use user default
+        self._theme_music_volume_set = False
+        if "music_volume" in theme_data:
+            self._theme_music_volume = float(theme_data.get("music_volume", 1.0))
+            self._theme_music_volume_set = True
+        elif "music_volume" in placeholder_data:
+            self._theme_music_volume = float(placeholder_data.get("music_volume", 1.0))
+            self._theme_music_volume_set = True
+        else:
+            self._theme_music_volume = 1.0
+        
+        # Apply volume to sound manager
+        self._sound_manager.set_theme_music_volume(self._theme_music_volume if self._theme_music_volume_set else 1.0)
+        
+        # Auto-start if not disabled
+        if self._mode != "DISABLED":
+            self.play()
+
+    def _parse_time_schedule(self, schedule_str: str):
+        """Parse time schedule string: hour:minute|path||hour:minute|path"""
+        self._time_schedule = []
+        entries = schedule_str.split("||")
+        for entry in entries:
+            if "|" in entry:
+                time_part, path_part = entry.split("|", 1)
+                if ":" in time_part:
+                    hour_str, minute_str = time_part.split(":")
+                    try:
+                        hour = int(hour_str)
+                        minute = int(minute_str)
+                        # Resolve path relative to theme
+                        track_path = self._resolve_track_path(path_part)
+                        if track_path:
+                            self._time_schedule.append((hour, minute, track_path))
+                    except ValueError:
+                        pass
+        
+        # Sort by time
+        self._time_schedule.sort(key=lambda x: x[0] * 60 + x[1])
+
+    def _parse_playlist(self, playlist_str: str, theme_path: Path, placeholder_path: Path):
+        """Parse playlist string: path||path||path"""
+        self._playlist = []
+        tracks = playlist_str.split("||")
+        for track in tracks:
+            track = track.strip()
+            if track:
+                track_path = self._resolve_track_path(track, theme_path, placeholder_path)
+                if track_path:
+                    self._playlist.append(track_path)
+        
+        # Create shuffled playlist
+        self._shuffled_playlist = self._playlist.copy()
+        random.shuffle(self._shuffled_playlist)
+        self._current_track_index = 0
+
+    def _resolve_track_path(self, track: str, theme_path: Path = None, placeholder_path: Path = None) -> str:
+        """Resolve track path, checking theme first then placeholder."""
+        if theme_path is None:
+            theme_path = self._theme_music_path.parent
+        if placeholder_path is None:
+            placeholder_path = self._placeholder_music_path.parent
+        
+        # Try theme path first
+        theme_track = theme_path / track
+        if theme_track.exists():
+            return str(theme_track)
+        
+        # Try placeholder path
+        placeholder_track = placeholder_path / track
+        if placeholder_track.exists():
+            return str(placeholder_track)
+        
+        # Track not found - return None
+        return None
+
+    def _get_effective_volume(self) -> float:
+        """Calculate effective volume: master × user_music × theme_music (if set)"""
+        master = self._sound_manager.get_master_volume()
+        user_music = self._sound_manager.get_music_volume()
+        if self._theme_music_volume_set:
+            return master * user_music * self._theme_music_volume
+        else:
+            return master * user_music
+
+    def play(self):
+        """Start playing music based on mode."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+        
+        if self._mode == "DISABLED":
+            return
+        
+        if self._paused:
+            self._paused = False
+            try:
+                pygame.mixer.music.unpause()
+                # If unpause doesn't work (music fully stopped), restart
+                if pygame.mixer.music.get_pos() == -1:
+                    if self._mode == "TIME":
+                        track_path = self._get_schedule_track()
+                    elif self._mode == "PLAYLIST":
+                        track_path = self._get_playlist_track()
+                    else:
+                        track_path = None
+                    if track_path:
+                        self._play_track(track_path)
+            except:
+                pass
+            return
+        
+        # Determine which track to play
+        track_path = None
+        
+        if self._mode == "TIME":
+            track_path = self._get_schedule_track()
+        elif self._mode == "PLAYLIST":
+            track_path = self._get_playlist_track()
+        
+        if track_path:
+            self._play_track(track_path)
+            self._start_schedule_timer()
+
+    def _get_schedule_track(self) -> str:
+        """Get track based on current time schedule."""
+        if not self._time_schedule:
+            return None
+        
+        now = datetime.now()
+        current_minutes = now.hour * 60 + now.minute
+        
+        # Find the most recent schedule entry that has passed
+        best_track = None
+        for hour, minute, track in self._time_schedule:
+            schedule_minutes = hour * 60 + minute
+            if schedule_minutes <= current_minutes:
+                best_track = track
+            else:
+                break
+        
+        # If no track found (all schedules are in future), wrap around to first
+        if best_track is None and self._time_schedule:
+            best_track = self._time_schedule[0][2]
+        
+        return best_track
+
+    def _get_playlist_track(self) -> str:
+        """Get next track from playlist."""
+        if not self._playlist:
+            return None
+        
+        if self._playback_mode == "SHUFFLE" or self._user_shuffle:
+            if self._current_track_index >= len(self._shuffled_playlist):
+                # Reset and reshuffle
+                self._shuffled_playlist = self._playlist.copy()
+                random.shuffle(self._shuffled_playlist)
+                self._current_track_index = 0
+            return self._shuffled_playlist[self._current_track_index]
+        else:
+            if self._current_track_index >= len(self._playlist):
+                self._current_track_index = 0
+            return self._playlist[self._current_track_index]
+
+    def _play_track(self, track_path: str):
+        """Play a specific track."""
+        if not track_path:
+            return
+        
+        # Calculate relative path for display
+        path_obj = Path(track_path)
+        
+        # Try to make it relative to theme or placeholder base path
+        rel_path = ""
+        if self._theme_base_path:
+            try:
+                rel_path = str(path_obj.relative_to(self._theme_base_path))
+            except ValueError:
+                pass
+        
+        if not rel_path and self._placeholder_base_path:
+            try:
+                rel_path = str(path_obj.relative_to(self._placeholder_base_path))
+            except ValueError:
+                pass
+        
+        if not rel_path:
+            rel_path = str(path_obj)
+        
+        self._current_track_name = rel_path
+        
+        try:
+            pygame.mixer.music.load(track_path)
+            pygame.mixer.music.set_volume(self._get_effective_volume())
+            pygame.mixer.music.play()
+        except Exception as e:
+            print(f"[MusicManager] Failed to play {track_path}: {e}")
+
+    def stop(self):
+        """Stop music playback."""
+        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
+            try:
+                pygame.mixer.music.stop()
+            except:
+                pass
+        self._cancel_schedule_timer()
+
+    def pause(self):
+        """Pause music."""
+        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
+            try:
+                pygame.mixer.music.pause()
+            except:
+                pass
+        self._paused = True
+
+    def toggle_pause(self):
+        """Toggle between play and pause."""
+        if self._paused:
+            self.play()
+        else:
+            self.pause()
+
+    def next_track(self):
+        """Skip to next track in playlist."""
+        if self._mode == "PLAYLIST":
+            self._current_track_index += 1
+            track_path = self._get_playlist_track()
+            if track_path:
+                was_paused = self._paused
+                self._play_track(track_path)
+                if was_paused:
+                    self._paused = True
+                    try:
+                        pygame.mixer.music.pause()
+                    except:
+                        pass
+
+    def previous_track(self):
+        """Go to previous track in playlist."""
+        if self._mode == "PLAYLIST":
+            self._current_track_index = max(0, self._current_track_index - 1)
+            track_path = self._get_playlist_track()
+            if track_path:
+                was_paused = self._paused
+                self._play_track(track_path)
+                if was_paused:
+                    self._paused = True
+                    try:
+                        pygame.mixer.music.pause()
+                    except:
+                        pass
+
+    def set_shuffle(self, shuffle: bool):
+        """Toggle shuffle mode."""
+        self._user_shuffle = shuffle
+        if shuffle and self._playlist:
+            # Reshuffle from current position
+            remaining = self._playlist[self._current_track_index:]
+            random.shuffle(remaining)
+            self._shuffled_playlist = self._playlist[:self._current_track_index] + remaining
+
+    def toggle_shuffle(self):
+        """Toggle shuffle."""
+        self.set_shuffle(not self._user_shuffle)
+
+    def _start_schedule_timer(self):
+        """Start timer to check schedule every 60 seconds."""
+        self._cancel_schedule_timer()
+        # Check immediately
+        self._check_schedule()
+        # Then check every 60 seconds
+        if self._mode == "TIME":
+            MusicManager._check_timer_id = "music_schedule_check"
+    
+    def update(self):
+        """Check if music ended and auto-advance playlist."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+        
+        if self._mode == "DISABLED":
+            return
+        
+        # Check if music has ended and auto-advance
+        try:
+            if not pygame.mixer.music.get_busy() and not self._paused:
+                if self._mode == "PLAYLIST" and self._playlist:
+                    self.next_track()
+                elif self._mode == "TIME":
+                    self._handle_time_mode_track_end()
+        except:
+            pass
+    
+    def _handle_time_mode_track_end(self):
+        """Handle track end in TIME mode - loop or switch based on schedule."""
+        if not self._time_schedule:
+            return
+        
+        # Get the current scheduled track
+        current_track = self._get_schedule_track()
+        if not current_track:
+            return
+        
+        # Check if the track has changed (time slot switched)
+        if current_track != self._current_track_name:
+            # Time slot changed - play new track
+            self._play_track(current_track)
+        else:
+            # Same time slot - replay the track (loop)
+            self._play_track(current_track)
+    
+    def _do_update(self):
+        """Internal method that performs update and handles timer cleanup."""
+        self._check_timer = None
+        self.update()
+
+    def _cancel_schedule_timer(self):
+        """Cancel the schedule timer."""
+        MusicManager._check_timer_id = None
+
+    def _check_schedule(self):
+        """Check if schedule needs to update."""
+        if self._mode != "TIME":
+            return
+        
+        now = datetime.now()
+        
+        # Check if hour changed
+        if now.hour != self._last_schedule_check_hour:
+            self._last_schedule_check_hour = now.hour
+            track = self._get_schedule_track()
+            if track:
+                # Check if we need to switch tracks
+                try:
+                    current = pygame.mixer.music.get_busy()
+                    if not current:
+                        self._play_track(track)
+                except:
+                    pass
+
+    def update_volume(self):
+        """Update music volume (call when user or theme volume changes)."""
+        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
+            try:
+                pygame.mixer.music.set_volume(self._get_effective_volume())
+            except:
+                pass
+
+    @property
+    def is_playing(self) -> bool:
+        """Check if music is currently playing."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return False
+        try:
+            return pygame.mixer.music.get_busy() and not self._paused
+        except:
+            return False
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def is_paused(self) -> bool:
+        return self._paused
+
+    @property
+    def is_shuffle(self) -> bool:
+        return self._user_shuffle
+
+    @property
+    def current_track_name(self) -> str:
+        return self._current_track_name
+
 
 class Renderer:
     # Device / Frame
@@ -945,6 +1613,12 @@ class Renderer:
         self._shuffled_game_names = list(self._game_path_lookup.keys())
         random.shuffle(self._shuffled_game_names)
         self._next_game_img_index = 0
+
+        # Sound manager
+        self.sound_manager = SoundManager()
+        
+        # Music manager
+        self.music_manager = MusicManager(self.sound_manager)
 
     # -----------------------------
     # Helpers
@@ -2003,6 +2677,10 @@ class Renderer:
         self._next_game_img_index = 0
         self.theme_path = theme_path if theme_path else PLACEHOLDER_DIR
         
+        # Reset theme volume flags so new theme starts fresh
+        self.sound_manager._theme_sfx_volume_set = False
+        self.sound_manager._theme_music_volume_set = False
+        
         # Clear wallpaper data from previous theme (critical for switching away from video themes!)
         self.screen_manager.main.clear_wallpaper()
         self.screen_manager.external.clear_wallpaper()
@@ -2020,6 +2698,16 @@ class Renderer:
                     self.theme_data = json.load(f)
             except Exception:
                 self.theme_data = {}
+
+        # Load sounds and set volume from theme (only if explicitly defined in theme.json)
+        if "sfx_volume" in self.theme_data:
+            self.sound_manager.set_theme_sfx_volume(float(self.theme_data.get("sfx_volume", 1.0)))
+        if "music_volume" in self.theme_data:
+            self.sound_manager.set_theme_music_volume(float(self.theme_data.get("music_volume", 1.0)))
+        self.sound_manager.load_theme_sounds(self.theme_path)
+        
+        # Load music configuration and start playback
+        self.music_manager.load_from_theme(self.theme_path, PLACEHOLDER_DIR)
 
         # Preview image
         self.preview_image = self._load_cached_rgba(self.theme_path / "preview.png", PLACEHOLDER_DIR / "preview.png")

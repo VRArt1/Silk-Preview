@@ -204,6 +204,60 @@ class SettingsDialog(tk.Toplevel):
         )
         reverse_direction_check.pack(anchor="w", pady=(5, 0))
         
+        sound_frame = ttk.LabelFrame(self.scrollable_frame, text="Sound", padding="10")
+        sound_frame.pack(fill="x", pady=(0, 10))
+        
+        master_vol_frame = ttk.Frame(sound_frame)
+        master_vol_frame.pack(fill="x", pady=(0, 5))
+        ttk.Label(master_vol_frame, text="Master Volume:").pack(side="left")
+        self.master_volume_var = tk.DoubleVar(value=getattr(app, 'master_volume', 1.0))
+        master_vol_slider = ttk.Scale(
+            master_vol_frame,
+            from_=0,
+            to=1,
+            orient="horizontal",
+            variable=self.master_volume_var,
+            command=self._on_master_volume_change
+        )
+        master_vol_slider.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        
+        self.master_volume_label = ttk.Label(master_vol_frame, text=f"{int(self.master_volume_var.get() * 100)}%")
+        self.master_volume_label.pack(side="left", padx=(5, 0))
+        
+        sfx_vol_frame = ttk.Frame(sound_frame)
+        sfx_vol_frame.pack(fill="x", pady=(0, 5))
+        ttk.Label(sfx_vol_frame, text="SFX Volume:").pack(side="left")
+        self.sfx_volume_var = tk.DoubleVar(value=getattr(app, 'sfx_volume', 1.0))
+        sfx_vol_slider = ttk.Scale(
+            sfx_vol_frame,
+            from_=0,
+            to=1,
+            orient="horizontal",
+            variable=self.sfx_volume_var,
+            command=self._on_sfx_volume_change
+        )
+        sfx_vol_slider.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        
+        self.sfx_volume_label = ttk.Label(sfx_vol_frame, text=f"{int(self.sfx_volume_var.get() * 100)}%")
+        self.sfx_volume_label.pack(side="left", padx=(5, 0))
+        
+        music_vol_frame = ttk.Frame(sound_frame)
+        music_vol_frame.pack(fill="x", pady=(0, 5))
+        ttk.Label(music_vol_frame, text="Music Volume:").pack(side="left")
+        self.music_volume_var = tk.DoubleVar(value=getattr(app, 'music_volume', 1.0))
+        music_vol_slider = ttk.Scale(
+            music_vol_frame,
+            from_=0,
+            to=1,
+            orient="horizontal",
+            variable=self.music_volume_var,
+            command=self._on_music_volume_change
+        )
+        music_vol_slider.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        
+        self.music_volume_label = ttk.Label(music_vol_frame, text=f"{int(self.music_volume_var.get() * 100)}%")
+        self.music_volume_label.pack(side="left", padx=(5, 0))
+        
         folders_frame = ttk.LabelFrame(self.scrollable_frame, text="Folders", padding="10")
         folders_frame.pack(fill="x", pady=(0, 0))
         
@@ -452,6 +506,40 @@ class SettingsDialog(tk.Toplevel):
         
         self.app._update_bg_scroll()
     
+    def _on_master_volume_change(self, value):
+        vol = float(value)
+        self.master_volume_var.set(vol)
+        self.master_volume_label.config(text=f"{int(vol * 100)}%")
+        self.app.master_volume = vol
+        if hasattr(self.app.renderer, 'sound_manager'):
+            self.app.renderer.sound_manager.set_master_volume(vol)
+        self._save_volume_setting("master_volume", vol)
+    
+    def _on_sfx_volume_change(self, value):
+        vol = float(value)
+        self.sfx_volume_var.set(vol)
+        self.sfx_volume_label.config(text=f"{int(vol * 100)}%")
+        self.app.sfx_volume = vol
+        if hasattr(self.app.renderer, 'sound_manager'):
+            self.app.renderer.sound_manager.set_sfx_volume(vol)
+        self._save_volume_setting("sfx_volume", vol)
+    
+    def _on_music_volume_change(self, value):
+        vol = float(value)
+        self.music_volume_var.set(vol)
+        self.music_volume_label.config(text=f"{int(vol * 100)}%")
+        self.app.music_volume = vol
+        if hasattr(self.app.renderer, 'sound_manager'):
+            self.app.renderer.sound_manager.set_music_volume(vol)
+        self._save_volume_setting("music_volume", vol)
+    
+    def _save_volume_setting(self, key, value):
+        if "Settings" not in self.app.config:
+            self.app.config["Settings"] = {}
+        self.app.config["Settings"][key] = str(value)
+        with open(self.app.settings_path, "w") as f:
+            self.app.config.write(f)
+    
     def update_from_app(self):
         self.corner_hints_var.set(self.app.corner_hints_var.get())
         self.dock_var.set(self.app.dock_var.get())
@@ -466,6 +554,27 @@ class SettingsDialog(tk.Toplevel):
         self.bg_scroll_speed_label.config(text=f"{self.app.bg_scroll_speed}")
         self.reverse_direction_var.set(getattr(self.app, 'reverse_direction', False))
         self.video_playback_var.set(getattr(self.app, 'video_playback', True))
+        
+        # Master volume is always user-controlled
+        self.master_volume_var.set(getattr(self.app, 'master_volume', 1.0))
+        self.master_volume_label.config(text=f"{int(self.master_volume_var.get() * 100)}%")
+        
+        # SFX and Music volumes: import from theme if available, otherwise use user settings
+        theme_data = getattr(getattr(self.app, 'renderer', None), 'theme_data', {})
+        
+        # Check if theme explicitly defined sfx_volume or music_volume
+        if "sfx_volume" in theme_data:
+            self.sfx_volume_var.set(float(theme_data.get("sfx_volume", 1.0)))
+        else:
+            self.sfx_volume_var.set(getattr(self.app, 'sfx_volume', 1.0))
+        
+        if "music_volume" in theme_data:
+            self.music_volume_var.set(float(theme_data.get("music_volume", 1.0)))
+        else:
+            self.music_volume_var.set(getattr(self.app, 'music_volume', 1.0))
+        
+        self.sfx_volume_label.config(text=f"{int(self.sfx_volume_var.get() * 100)}%")
+        self.music_volume_label.config(text=f"{int(self.music_volume_var.get() * 100)}%")
         self._rebuild_accent_color_picker()
     
     def _open_assets_folder(self):

@@ -8,7 +8,7 @@ import platform
 import urllib.request
 import zipfile
 
-REQUIRED_PACKAGES = ["Pillow", "av", "tkinterdnd2", "opencv-python"]
+REQUIRED_PACKAGES = ["Pillow", "av", "tkinterdnd2", "opencv-python", "pygame"]
 
 def install_packages():
     for pkg in REQUIRED_PACKAGES:

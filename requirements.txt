@@ -2,3 +2,4 @@ Pillow
 av
 tkinterdnd2
 opencv-python
+pygame

@@ -148,6 +148,21 @@ class App(TkinterDnD.Tk):
             self.config["Settings"]["reverse_direction"] = "False"
         self.reverse_direction = self.config.getboolean("Settings", "reverse_direction", fallback=False)
         
+        # master_volume
+        if "master_volume" not in self.config["Settings"]:
+            self.config["Settings"]["master_volume"] = "1.0"
+        self.master_volume = self.config.getfloat("Settings", "master_volume", fallback=1.0)
+        
+        # sfx_volume
+        if "sfx_volume" not in self.config["Settings"]:
+            self.config["Settings"]["sfx_volume"] = "1.0"
+        self.sfx_volume = self.config.getfloat("Settings", "sfx_volume", fallback=1.0)
+        
+        # music_volume
+        if "music_volume" not in self.config["Settings"]:
+            self.config["Settings"]["music_volume"] = "1.0"
+        self.music_volume = self.config.getfloat("Settings", "music_volume", fallback=1.0)
+        
         # Calculate max values from zoom levels
         self.max_rows_dual = max(r for r, c in self.zoom_levels_dual)
         self.max_cols_dual = max(c for r, c in self.zoom_levels_dual)
@@ -221,6 +236,12 @@ class App(TkinterDnD.Tk):
         self.renderer.magnify_size = self.magnify_size
         self.renderer.magnify_window = self.magnify_window
         self.renderer.top_screen_icon_scale = self.logo_size / 100.0
+        
+        # Apply volume settings to sound manager
+        if hasattr(self.renderer, 'sound_manager'):
+            self.renderer.sound_manager.set_master_volume(self.master_volume)
+            self.renderer.sound_manager.set_sfx_volume(self.sfx_volume)
+            self.renderer.sound_manager.set_music_volume(self.music_volume)
         
         # Set initial top screen offset based on stacked mode setting
         from screen import Screen
@@ -400,6 +421,16 @@ class App(TkinterDnD.Tk):
         self.settings_button.pack(side="right", padx=4)
         
         # ----------------------------
+        # Music button (right of Settings)
+        # ----------------------------
+        self.music_button = ttk.Button(
+            self.controls,
+            text="Music",
+            command=self.open_music
+        )
+        self.music_button.pack(side="right", padx=4)
+        
+        # ----------------------------
         # Bezel Edit Mode button (left of Settings)
         # ----------------------------
         self.bezel_edit_btn = ttk.Button(
@@ -449,6 +480,15 @@ class App(TkinterDnD.Tk):
         self.update_idletasks()
         self.redraw()
         self._schedule_gif_redraw()
+        
+        # Start music update timer (for auto-advancing playlist)
+        self._schedule_music_update()
+    
+    def _schedule_music_update(self):
+        """Schedule periodic music manager updates for auto-advancing playlist."""
+        if hasattr(self.renderer, 'music_manager'):
+            self.renderer.music_manager.update()
+        self.after(500, self._schedule_music_update)
         
     # ----------------------------
     # Canvas resize
@@ -540,10 +580,21 @@ class App(TkinterDnD.Tk):
         if not hasattr(self, '_settings_dialog') or not self._settings_dialog.winfo_exists():
             from widgets.settings_dialog import SettingsDialog
             self._settings_dialog = SettingsDialog(self, app=self)
+            self._settings_dialog.update_from_app()
         else:
             self._settings_dialog.lift()
             self._settings_dialog.focus_force()
             self._settings_dialog.update_from_app()
+    
+    def open_music(self):
+        if not hasattr(self, '_music_dialog') or not self._music_dialog.winfo_exists():
+            from widgets.music_dialog import MusicDialog
+            self._music_dialog = MusicDialog(self, app=self)
+            self._music_dialog.update_from_app()
+        else:
+            self._music_dialog.lift()
+            self._music_dialog.focus_force()
+            self._music_dialog.update_from_app()
     
     def toggle_empty_slots(self):
         # Update both App and Renderer
@@ -1156,6 +1207,10 @@ class App(TkinterDnD.Tk):
             
             # Load new theme
             self.renderer.load_theme(theme_path, max_grid_items=self.max_grid_slots)
+            
+            # Update settings dialog if open
+            if hasattr(self, '_settings_dialog') and self._settings_dialog.winfo_exists():
+                self._settings_dialog.update_from_app()
             
             # Refresh preview panel
             self.preview_panel.refresh()
@@ -2401,11 +2456,15 @@ class App(TkinterDnD.Tk):
     def zoom_in(self):
         if self.zoom_index < len(self.zoom_levels) - 1:
             self.zoom_index += 1
+            if hasattr(self.renderer, 'sound_manager'):
+                self.renderer.sound_manager.play("grid_zoom_in")
             self._apply_zoom()
     
     def zoom_out(self):
         if self.zoom_index > 0:
             self.zoom_index -= 1
+            if hasattr(self.renderer, 'sound_manager'):
+                self.renderer.sound_manager.play("grid_zoom_out")
             self._apply_zoom()
     
     def canvas_zoom_in(self):
@@ -2567,6 +2626,9 @@ class App(TkinterDnD.Tk):
         self.config["Settings"]["video_playback"] = str(getattr(self, "video_playback", True))
         self.config["Settings"]["bg_scroll_speed"] = str(getattr(self, "bg_scroll_speed", 1))
         self.config["Settings"]["reverse_direction"] = str(getattr(self, "reverse_direction", False))
+        self.config["Settings"]["master_volume"] = str(getattr(self, "master_volume", 1.0))
+        self.config["Settings"]["sfx_volume"] = str(getattr(self, "sfx_volume", 1.0))
+        self.config["Settings"]["music_volume"] = str(getattr(self, "music_volume", 1.0))
         
         # Misc (settings not in the menu)
         self.config["Misc"]["canvas_zoom"] = str(getattr(self, "canvas_zoom", 1.0))
@@ -2603,6 +2665,9 @@ class App(TkinterDnD.Tk):
         
         if new_idx != self.renderer.selected_index:
             self.renderer.selected_index = new_idx
+            # Play navigate sound
+            if hasattr(self.renderer, 'sound_manager'):
+                self.renderer.sound_manager.play("navigate")
             # Reset logo animation for new selection
             if new_idx in self.renderer._last_logo_update:
                 del self.renderer._last_logo_update[new_idx]
@@ -2981,6 +3046,9 @@ class App(TkinterDnD.Tk):
             idx = self.get_grid_index_at(event.x, event.y)
             if idx is not None and idx != self.renderer.selected_index:
                 self.renderer.selected_index = idx
+                # Play navigate sound
+                if hasattr(self.renderer, 'sound_manager'):
+                    self.renderer.sound_manager.play("navigate")
                 # Reset logo animation for new selection
                 if idx in self.renderer._last_logo_update:
                     del self.renderer._last_logo_update[idx]
