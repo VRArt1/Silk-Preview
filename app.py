@@ -93,6 +93,7 @@ class App(TkinterDnD.Tk):
         # dock_background
         if "dock_background" not in self.config["Settings"]:
             self.config["Settings"]["dock_background"] = "True"
+        self.dock_background = self.config.getboolean("Settings", "dock_background", fallback=True)
         
         # logo_size
         if "logo_size" not in self.config["Settings"]:
@@ -102,6 +103,7 @@ class App(TkinterDnD.Tk):
         # show_corner_hints
         if "show_corner_hints" not in self.config["Settings"]:
             self.config["Settings"]["show_corner_hints"] = "True"
+        self.show_corner_hints = self.config.getboolean("Settings", "show_corner_hints", fallback=True)
         
         # single_screen_mode
         if "single_screen_mode" not in self.config["Settings"]:
@@ -162,6 +164,16 @@ class App(TkinterDnD.Tk):
         if "music_volume" not in self.config["Settings"]:
             self.config["Settings"]["music_volume"] = "1.0"
         self.music_volume = self.config.getfloat("Settings", "music_volume", fallback=1.0)
+        
+        # preview_panel_width (stored as pixels)
+        if "preview_panel_width" not in self.config["Misc"]:
+            self.config["Misc"]["preview_panel_width"] = "300"
+        self.preview_panel_width = self.config.getint("Misc", "preview_panel_width", fallback=300)
+        
+        # editor_panel_width (stored as pixels, default 0 for hidden)
+        if "editor_panel_width" not in self.config["Misc"]:
+            self.config["Misc"]["editor_panel_width"] = "0"
+        self.editor_panel_width = self.config.getint("Misc", "editor_panel_width", fallback=0)
         
         # Calculate max values from zoom levels
         self.max_rows_dual = max(r for r, c in self.zoom_levels_dual)
@@ -236,6 +248,8 @@ class App(TkinterDnD.Tk):
         self.renderer.magnify_size = self.magnify_size
         self.renderer.magnify_window = self.magnify_window
         self.renderer.top_screen_icon_scale = self.logo_size / 100.0
+        self.renderer.corner_hints_visible = self.show_corner_hints
+        self.renderer.dock_visible = self.dock_background
         
         # Apply volume settings to sound manager
         if hasattr(self.renderer, 'sound_manager'):
@@ -269,25 +283,38 @@ class App(TkinterDnD.Tk):
         # Main layout
         # ----------------------------
         self.main_frame = tk.Frame(self)
-        self.main_frame.grid(row=0, column=0, sticky="nsew")
-        self.main_frame.grid_propagate(True)
-        self.rowconfigure(0, weight=1)
-        self.columnconfigure(0, weight=1)
-        self.main_frame.columnconfigure(0, weight=1)
-        self.main_frame.columnconfigure(1, weight=0)
-        self.main_frame.rowconfigure(0, weight=1)
-        self.main_frame.rowconfigure(1, weight=0)
-
+        self.main_frame.pack(fill="both", expand=True)
+        
+        # Top area with paned window
+        self.top_frame = tk.Frame(self.main_frame)
+        self.top_frame.pack(fill="both", expand=True)
+        
+        # PanedWindow for resizable layout
+        self.paned = ttk.PanedWindow(self.top_frame, orient="horizontal")
+        self.paned.pack(fill="both", expand=True)
+        
+        # Sash styling
+        style = ttk.Style()
+        style.configure("TPanedwindow", sashthickness=8)
+        
+        # Editor panel (left side, starts hidden)
+        self.editor_panel = tk.Frame(self.paned, width=0)
+        self.paned.add(self.editor_panel, weight=0)
+        
+        # Canvas frame
+        self.canvas_frame = tk.Frame(self.paned, bg="#202020")
+        self.paned.add(self.canvas_frame, weight=1)
+        
         # Canvas
-        self.canvas = tk.Canvas(self.main_frame, bg="#202020", highlightthickness=0)
-        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.canvas = tk.Canvas(self.canvas_frame, bg="#202020", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
         
         # Video player manager for video wallpapers (after canvas is created)
         self.video_player_manager = VideoPlayerManager(self.canvas, self.renderer)
         
         # Canvas Zoom buttons frame (separate from canvas so they aren't affected by zoom)
-        self.canvas_zoom_frame = tk.Frame(self.main_frame, bg="#2a2a2a")
-        self.canvas_zoom_frame.grid(row=0, column=0, sticky="sw", padx=10, pady=10)
+        self.canvas_zoom_frame = tk.Frame(self.canvas_frame, bg="#2a2a2a")
+        self.canvas_zoom_frame.place(x=10, rely=1.0, y=-10, anchor="sw")
         
         self.canvas_zoom_in_btn = tk.Button(
             self.canvas_zoom_frame, text="+", width=3, height=1, font=("Arial", 10, "bold"),
@@ -307,18 +334,39 @@ class App(TkinterDnD.Tk):
         
         # Register the root window as drop target for drag-and-drop (delayed to ensure window is ready)
         self.after(100, self._setup_dnd)
-
-        # Preview panel
-        self.preview_panel = PreviewPanel(self.main_frame, renderer=self.renderer, width=300)
-        self.preview_panel.grid(row=0, column=1, sticky="ns")
+        
+        # Preview panel (width controlled by paned sash position)
+        self.preview_panel = PreviewPanel(
+            self.paned,
+            renderer=self.renderer,
+            app=self
+        )
+        self.paned.add(self.preview_panel)
+        
+        # Custom visible sash/divider for right panel (between canvas and preview)
+        self.right_sash_frame = tk.Frame(self.paned, cursor="sb_h_double_arrow", width=20)
+        
+        # Custom visible sash/divider for left panel (between editor and canvas)
+        self.left_sash_frame = tk.Frame(self.paned, cursor="sb_h_double_arrow", width=20)
+        
+        # Initialize editor panel width setting if not exists
+        if "editor_panel_width" not in self.config["Misc"]:
+            self.config["Misc"]["editor_panel_width"] = "0"
+        self.editor_panel_width = self.config.getint("Misc", "editor_panel_width", fallback=0)
+        
+        # Set initial sash positions after window is ready
+        self.after(100, self._set_initial_sash_positions)
+        
+        # Bind paned window resize to reposition sashes
+        self.paned.bind("<Configure>", self._on_paned_resize)
         
         # Load initial theme using unified path (skip cleanup and save since no videos exist yet and controls not ready)
         if initial_theme_folder.exists():
             self._load_theme_from_path(initial_theme_folder, skip_cleanup=True, skip_save=True)
 
-        # Controls
+        # Controls frame
         self.controls = tk.Frame(self.main_frame)
-        self.controls.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10, pady=8)
+        self.controls.pack(fill="x", pady=(0, 8))
 
         # ----------------------------
         # Frame/Bezel selector - auto-discover available bezels
@@ -392,10 +440,32 @@ class App(TkinterDnD.Tk):
         ttk.Button(self.controls, text="+", width=3, command=self.zoom_in).pack(side="left", padx=0)
         
         # ----------------------------
+        # Theme Editor buttons - right side, ordered: New Theme, Edit Theme, Edit Bezel, Music, Settings
+        # ----------------------------
+        self.theme_edit_var = tk.BooleanVar(value=False)
+        self.theme_edit_btn = ttk.Button(
+            self.controls,
+            text="Edit Theme",
+            command=self.toggle_theme_edit_mode
+        )
+        
+        self.new_theme_btn = ttk.Button(
+            self.controls,
+            text="New Theme",
+            command=self.create_new_theme
+        )
+        
+        self.bezel_edit_btn = ttk.Button(
+            self.controls,
+            text="Edit Bezel",
+            command=self.toggle_bezel_edit_mode
+        )
+        
+        # ----------------------------
         # UI Toggle Variables (for settings dialog)
         # ----------------------------
-        self.corner_hints_var = tk.BooleanVar(value=self.renderer.corner_hints_visible)
-        self.dock_var = tk.BooleanVar(value=self.renderer.dock_visible)
+        self.corner_hints_var = tk.BooleanVar(value=self.show_corner_hints)
+        self.dock_var = tk.BooleanVar(value=self.dock_background)
         self.app_grid_visible = self.empty_apps_visible
         self.populated_apps_visible = self.apps_visible
         self.single_stacked_var = tk.BooleanVar(value=self.single_screen_stacked_mode)
@@ -418,27 +488,26 @@ class App(TkinterDnD.Tk):
             text="Settings",
             command=self.open_settings
         )
-        self.settings_button.pack(side="right", padx=4)
         
         # ----------------------------
-        # Music button (right of Settings)
+        # Music button
         # ----------------------------
         self.music_button = ttk.Button(
             self.controls,
             text="Music",
             command=self.open_music
         )
-        self.music_button.pack(side="right", padx=4)
         
         # ----------------------------
-        # Bezel Edit Mode button (left of Settings)
+        # Edit Bezel button
         # ----------------------------
-        self.bezel_edit_btn = ttk.Button(
-            self.controls,
-            text="Bezel Edit Mode",
-            command=self.toggle_bezel_edit_mode
-        )
+        
+        # Pack in reverse order (rightmost first): Settings, Music, Edit Bezel, Edit Theme, New Theme
+        self.settings_button.pack(side="right", padx=4)
+        self.music_button.pack(side="right", padx=4)
         self.bezel_edit_btn.pack(side="right", padx=4)
+        self.theme_edit_btn.pack(side="right", padx=4)
+        self.new_theme_btn.pack(side="right", padx=4)
         
         # ----------------------------
         # Canvas and keyboard binds
@@ -549,6 +618,19 @@ class App(TkinterDnD.Tk):
     def _force_redraw(self):
         """Force cache invalidation and redraw regardless of canvas size."""
         self.renderer._invalidate_static_cache()
+        
+        # Check for video wallpapers and setup if needed
+        main_screen = self.renderer.screen_manager.main
+        external_screen = self.renderer.screen_manager.external
+        has_video = (main_screen.wallpaper_is_video and main_screen.wallpaper_video_path) or \
+                   (external_screen.wallpaper_is_video and external_screen.wallpaper_video_path)
+        
+        if has_video:
+            # Re-enable video wallpaper mode before setting up videos
+            main_screen.reenable_video_wallpaper()
+            external_screen.reenable_video_wallpaper()
+            self._setup_video_wallpapers()
+        
         self.redraw()
         self._update_video_positions()
 
@@ -577,6 +659,7 @@ class App(TkinterDnD.Tk):
         self.save_settings()
     
     def open_settings(self):
+        self._play_menu_sound()
         if not hasattr(self, '_settings_dialog') or not self._settings_dialog.winfo_exists():
             from widgets.settings_dialog import SettingsDialog
             self._settings_dialog = SettingsDialog(self, app=self)
@@ -587,6 +670,7 @@ class App(TkinterDnD.Tk):
             self._settings_dialog.update_from_app()
     
     def open_music(self):
+        self._play_menu_sound()
         if not hasattr(self, '_music_dialog') or not self._music_dialog.winfo_exists():
             from widgets.music_dialog import MusicDialog
             self._music_dialog = MusicDialog(self, app=self)
@@ -816,6 +900,23 @@ class App(TkinterDnD.Tk):
     # Frame color callback
     # -------------------------------------------------
     def change_bezel(self, selection):
+        if self.theme_edit_var.get() and self.preview_panel.is_editing_focused():
+            return
+        
+        # Exit theme edit mode if active (since changing bezel may change device settings)
+        if self.theme_edit_var.get():
+            if self.preview_panel.has_unsaved_changes():
+                result = self._ask_apply_or_revert_theme()
+                if result == "apply":
+                    self.preview_panel._save_theme()
+                elif result == "revert":
+                    self.preview_panel._revert_changes()
+                else:
+                    return
+            self.theme_edit_var.set(False)
+            self.theme_edit_btn.config(text="Edit Theme")
+            self.preview_panel.set_edit_mode(False)
+        
         # Exit bezel edit mode if active
         if self.renderer.bezel_edit_mode:
             if self.renderer.has_unsaved_changes():
@@ -1147,6 +1248,21 @@ class App(TkinterDnD.Tk):
         
         
     def load_theme(self):
+        if self.theme_edit_var.get() and self.preview_panel.is_editing_focused():
+            return
+        
+        if self.preview_panel.has_unsaved_changes():
+            result = self._ask_apply_or_revert_theme()
+            if result == "apply":
+                self.preview_panel._save_theme()
+            elif result == "cancel":
+                return
+        
+        if self.theme_edit_var.get():
+            self.theme_edit_var.set(False)
+            self.theme_edit_btn.config(text="Edit Theme")
+            self.preview_panel.set_edit_mode(False)
+        
         folder = filedialog.askdirectory()
         if folder:
             self._load_theme_from_path(Path(folder))
@@ -1205,12 +1321,27 @@ class App(TkinterDnD.Tk):
                     self.after_cancel(self._pil_video_timer_id)
                     self._pil_video_timer_id = None
             
+            # Start loading sound
+            self._play_theme_loading_sound()
+            
             # Load new theme
             self.renderer.load_theme(theme_path, max_grid_items=self.max_grid_slots)
             
-            # Update settings dialog if open
+            # Import volume settings from theme if present
+            if "music_volume" in self.renderer.theme_data:
+                self.music_volume = float(self.renderer.theme_data["music_volume"])
+                self.renderer.sound_manager.set_music_volume(self.music_volume)
+            
+            if "sfx_volume" in self.renderer.theme_data:
+                self.sfx_volume = float(self.renderer.theme_data["sfx_volume"])
+                self.renderer.sound_manager.set_sfx_volume(self.sfx_volume)
+            
+            # Update dialogs if open
             if hasattr(self, '_settings_dialog') and self._settings_dialog.winfo_exists():
                 self._settings_dialog.update_from_app()
+            
+            if hasattr(self, '_music_dialog') and self._music_dialog.winfo_exists():
+                self._music_dialog.update_from_app()
             
             # Refresh preview panel
             self.preview_panel.refresh()
@@ -1235,6 +1366,8 @@ class App(TkinterDnD.Tk):
                     self.renderer._invalidate_static_cache()
                     # Show static first frame via regular wallpaper rendering
                     self.redraw()
+                    # Stop loading sounds since we're not setting up videos
+                    self._stop_loading_sound_and_play_complete()
                 else:
                     # Re-enable video wallpaper mode before setting up videos
                     self.renderer.screen_manager.main.reenable_video_wallpaper()
@@ -1245,6 +1378,8 @@ class App(TkinterDnD.Tk):
                 # No videos, redraw immediately
                 self._setup_video_wallpapers()
                 self.redraw()
+                # Play loading complete sound
+                self._stop_loading_sound_and_play_complete()
             
             self.last_theme_path = str(theme_path)
             if not skip_save:
@@ -1276,6 +1411,9 @@ class App(TkinterDnD.Tk):
         self.renderer._invalidate_static_cache()
         self.redraw()
         self._update_video_positions()
+        
+        # Play loading complete sound
+        self._stop_loading_sound_and_play_complete()
     
     def _try_setup_videos_with_retry(self, on_video_ready_callback=None, retry_count=0, max_retries=5):
         """Try to setup videos, retrying if canvas isn't ready yet."""
@@ -1399,6 +1537,20 @@ class App(TkinterDnD.Tk):
         screen_y = device_y + round(screen.y * bezel_scale)
         screen_w = round(screen.w * bezel_scale)
         screen_h = round(screen.h * bezel_scale)
+        
+        # Apply vertical fit logic for video wallpapers (same as renderer)
+        if screen.wallpaper and screen.wallpaper_is_video:
+            img_w, img_h = screen.wallpaper.size
+            fit_scale = screen_h / img_h
+            fit_w = round(img_w * fit_scale)
+            
+            if fit_w < screen_w:
+                # Would leave gaps, keep stretched dimensions (already set)
+                pass
+            else:
+                # Fit vertically, center horizontally
+                screen_w = fit_w
+                screen_x = screen_x + (round(screen.w * bezel_scale) - screen_w) // 2
         
         # Apply canvas zoom if needed
         if canvas_zoom != 1.0:
@@ -1540,9 +1692,210 @@ class App(TkinterDnD.Tk):
         
         self.canvas.drop_target_register(DND_FILES)
         self.canvas.dnd_bind('<<Drop>>', self._on_theme_drop)
+    
+    def _setup_right_sash(self):
+        """Setup and place the visible sash widget for right panel."""
+        if not hasattr(self, 'right_sash_frame') or not self.right_sash_frame.winfo_exists():
+            return
+        
+        self.right_sash_frame.place_forget()
+        self.update_idletasks()
+        
+        sash_x = self.paned.sashpos(1)
+        total_height = self.paned.winfo_height()
+        
+        if total_height > 0 and sash_x >= 0:
+            sash_x = max(0, sash_x)
+            if sash_x <= 0:
+                self.right_sash_frame.place(x=0, y=0, width=10, height=total_height)
+            else:
+                self.right_sash_frame.place(x=sash_x - 10, y=0, width=10, height=total_height)
+            
+            for widget in self.right_sash_frame.winfo_children():
+                widget.destroy()
+            
+            sash_line = tk.Frame(self.right_sash_frame, cursor="sb_h_double_arrow")
+            sash_line.place(relx=0.5, rely=0, width=1, relheight=1, anchor="center")
+            
+            sash_line.bind("<B1-Motion>", self._on_right_sash_drag)
+            sash_line.bind("<ButtonRelease-1>", self._on_right_sash_release)
+            sash_line.bind("<Button-1>", self._on_right_sash_press)
+            self.right_sash_frame.bind("<B1-Motion>", self._on_right_sash_drag)
+            self.right_sash_frame.bind("<ButtonRelease-1>", self._on_right_sash_release)
+            self.right_sash_frame.bind("<Button-1>", self._on_right_sash_press)
+    
+    def _setup_left_sash(self):
+        """Setup and place the visible sash widget for left panel."""
+        if not hasattr(self, 'left_sash_frame') or not self.left_sash_frame.winfo_exists():
+            return
+        
+        self.left_sash_frame.place_forget()
+        self.update_idletasks()
+        
+        sash_x = self.paned.sashpos(0)
+        total_height = self.paned.winfo_height()
+        
+        if total_height > 0 and sash_x >= 0:
+            sash_x = max(0, sash_x)
+            self.left_sash_frame.place(x=sash_x, y=0, width=10, height=total_height)
+            
+            for widget in self.left_sash_frame.winfo_children():
+                widget.destroy()
+            
+            sash_line = tk.Frame(self.left_sash_frame, cursor="sb_h_double_arrow")
+            sash_line.place(relx=0.5, rely=0, width=1, relheight=1, anchor="center")
+            
+            sash_line.bind("<B1-Motion>", self._on_left_sash_drag)
+            sash_line.bind("<ButtonRelease-1>", self._on_left_sash_release)
+            sash_line.bind("<Button-1>", self._on_left_sash_press)
+            self.left_sash_frame.bind("<B1-Motion>", self._on_left_sash_drag)
+            self.left_sash_frame.bind("<ButtonRelease-1>", self._on_left_sash_release)
+            self.left_sash_frame.bind("<Button-1>", self._on_left_sash_press)
+    
+    def _set_initial_sash_positions(self):
+        """Set the initial sash positions after window is ready."""
+        if hasattr(self, 'paned') and self.paned.winfo_exists():
+            total_width = self.paned.winfo_width()
+            if total_width > 0:
+                # Set right sash (preview panel)
+                sash_pos = total_width - self.preview_panel_width
+                min_sash = 300
+                max_sash = total_width - 300
+                if self.preview_panel_width <= 50:
+                    sash_pos = total_width
+                elif sash_pos < min_sash:
+                    sash_pos = min_sash
+                elif sash_pos > max_sash:
+                    sash_pos = max_sash
+                self.paned.sashpos(1, sash_pos)
+                
+                # Set left sash (editor panel)
+                sash_pos = self.editor_panel_width
+                if sash_pos <= 50:
+                    sash_pos = 0
+                elif sash_pos > total_width - 300:
+                    sash_pos = total_width - 300
+                self.paned.sashpos(0, sash_pos)
+                
+                self._setup_right_sash()
+                self._setup_left_sash()
+    
+    def _on_right_sash_press(self, event):
+        """Record starting position when right sash is clicked."""
+        self._right_sash_anchor_x = event.x_root
+    
+    def _on_right_sash_drag(self, event):
+        """Handle dragging the right sash - simplified logic."""
+        if not hasattr(self, 'right_sash_frame') or not self.right_sash_frame.winfo_exists():
+            return
+        
+        total_width = self.paned.winfo_width()
+        window_x = self.paned.winfo_rootx()
+        if total_width <= 0:
+            return
+        
+        min_panel_width = 300
+        snap_close_threshold = 150
+        
+        mouse_x = event.x_root - window_x
+        panel_size = total_width - mouse_x
+        
+        if panel_size < snap_close_threshold:
+            actual_sash = total_width
+        elif panel_size < min_panel_width:
+            actual_sash = total_width - min_panel_width
+        else:
+            actual_sash = mouse_x
+        
+        self.paned.sashpos(1, actual_sash)
+        sash_x = max(0, actual_sash)
+        self.right_sash_frame.place(x=sash_x - 20, y=0, width=20, height=self.paned.winfo_height())
+    
+    def _on_right_sash_release(self, event):
+        """Handle right sash release - save position."""
+        self._right_sash_anchor_x = None
+        self._save_right_paned_position()
+        self._setup_right_sash()
+    
+    # Left sash handlers (between editor panel and canvas)
+    def _on_left_sash_press(self, event):
+        """Record starting position when left sash is clicked."""
+        self._left_sash_anchor_x = event.x_root
+    
+    def _on_left_sash_drag(self, event):
+        """Handle dragging the left sash - same logic as right sash."""
+        if not hasattr(self, 'left_sash_frame') or not self.left_sash_frame.winfo_exists():
+            return
+        
+        total_width = self.paned.winfo_width()
+        window_x = self.paned.winfo_rootx()
+        if total_width <= 0:
+            return
+        
+        min_panel_width = 300
+        snap_close_threshold = 150
+        
+        mouse_x = event.x_root - window_x
+        panel_size = mouse_x
+        
+        if panel_size < snap_close_threshold:
+            actual_sash = 0
+        elif panel_size < min_panel_width:
+            actual_sash = min_panel_width
+        else:
+            actual_sash = mouse_x
+        
+        self.paned.sashpos(0, actual_sash)
+        sash_x = max(0, actual_sash)
+        self.left_sash_frame.place(x=sash_x, y=0, width=20, height=self.paned.winfo_height())
+    
+    def _on_left_sash_release(self, event):
+        """Handle left sash release - save position."""
+        self._left_sash_anchor_x = None
+        self._save_left_paned_position()
+        self._setup_left_sash()
+    
+    def _save_left_paned_position(self):
+        """Save the editor panel width when left sash is released."""
+        if hasattr(self, 'paned') and self.paned.winfo_exists():
+            sash_pos = self.paned.sashpos(0)
+            if sash_pos < 50:
+                sash_pos = 0
+            self.editor_panel_width = sash_pos
+            self.config["Misc"]["editor_panel_width"] = str(self.editor_panel_width)
+            self.save_settings()
+    
+    def _on_paned_resize(self, event=None):
+        """Handle paned window resize - reposition the visible sashes."""
+        if hasattr(self, 'right_sash_frame') and self.right_sash_frame.winfo_exists():
+            self._setup_right_sash()
+        if hasattr(self, 'left_sash_frame') and self.left_sash_frame.winfo_exists():
+            self._setup_left_sash()
+    
+    def _save_right_paned_position(self):
+        """Save the preview panel width when right sash is released."""
+        if hasattr(self, 'paned') and self.paned.winfo_exists():
+            sash_pos = self.paned.sashpos(1)
+            total_width = self.paned.winfo_width()
+            panel_width = total_width - sash_pos
+            if panel_width < 50:
+                panel_width = 0
+            self.preview_panel_width = panel_width
+            self.config["Misc"]["preview_panel_width"] = str(self.preview_panel_width)
+            self.save_settings()
 
 
     def refresh(self):
+        if self.theme_edit_var.get() and self.preview_panel.is_editing_focused():
+            return
+        
+        if self.preview_panel.has_unsaved_changes():
+            result = self._ask_apply_or_revert_theme()
+            if result == "apply":
+                self.preview_panel._save_theme()
+            elif result == "cancel":
+                return
+        
         # Refresh bezel list in case new ones were added/removed
         self.renderer.discover_bezels()
         self.bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
@@ -1709,6 +2062,9 @@ class App(TkinterDnD.Tk):
     
     def toggle_bezel_edit_mode(self):
         """Toggle bezel editing mode on/off"""
+        if self.theme_edit_var.get() and self.preview_panel.is_editing_focused():
+            return
+        
         # Toggle the state
         new_mode = not self.renderer.bezel_edit_mode
         
@@ -1737,6 +2093,172 @@ class App(TkinterDnD.Tk):
         self._update_bezel_edit_overlay()
         
         self.redraw()
+    
+    def toggle_theme_edit_mode(self):
+        """Toggle theme editing mode on/off"""
+        new_mode = not self.theme_edit_var.get()
+        
+        if new_mode:
+            self.theme_edit_var.set(True)
+            self.theme_edit_btn.config(text="Exit Edit")
+            self.preview_panel.set_edit_mode(True)
+        else:
+            if self.preview_panel.has_unsaved_changes():
+                result = self._ask_apply_or_revert_theme()
+                if result == "apply":
+                    self.preview_panel._save_theme()
+                    self.theme_edit_var.set(False)
+                    self.theme_edit_btn.config(text="Edit Theme")
+                    self.preview_panel.set_edit_mode(False)
+                elif result == "revert":
+                    self.preview_panel._revert_changes()
+                    self.theme_edit_var.set(False)
+                    self.theme_edit_btn.config(text="Edit Theme")
+                    self.preview_panel.set_edit_mode(False)
+                else:
+                    return
+            else:
+                self.theme_edit_var.set(False)
+                self.theme_edit_btn.config(text="Edit Theme")
+                self.preview_panel.set_edit_mode(False)
+    
+    def _ask_apply_or_revert_theme(self):
+        """Ask user whether to apply or revert theme changes"""
+        dialog = tk.Toplevel(self)
+        dialog.title("Edit Theme")
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        dialog.geometry("300x120")
+        
+        result = {"action": "cancel"}
+        
+        label = tk.Label(dialog, text="Would you like to apply or revert your changes?", pady=10)
+        label.pack()
+        
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(pady=10)
+        
+        def on_apply():
+            result["action"] = "apply"
+            dialog.destroy()
+        
+        def on_revert():
+            result["action"] = "revert"
+            dialog.destroy()
+        
+        def on_cancel():
+            result["action"] = "cancel"
+            dialog.destroy()
+        
+        apply_btn = tk.Button(button_frame, text="Apply", command=on_apply, width=8)
+        apply_btn.pack(side="left", padx=5)
+        
+        revert_btn = tk.Button(button_frame, text="Revert", command=on_revert, width=8)
+        revert_btn.pack(side="left", padx=5)
+        
+        cancel_btn = tk.Button(button_frame, text="Cancel", command=on_cancel, width=8)
+        cancel_btn.pack(side="left", padx=5)
+        
+        dialog.wait_window()
+        return result["action"]
+    
+    def create_new_theme(self):
+        """Create a new theme folder with default structure."""
+        if self.theme_edit_var.get() and self.preview_panel.is_editing_focused():
+            return
+        
+        if self.preview_panel.has_unsaved_changes():
+            result = self._ask_apply_or_revert_theme()
+            if result == "apply":
+                self.preview_panel._save_theme()
+            elif result == "cancel":
+                return
+        
+        dialog = tk.Toplevel(self)
+        dialog.title("New Theme")
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        dialog.geometry("350x150")
+        
+        result = {"name": None, "created": False}
+        
+        label = tk.Label(dialog, text="Enter a name for your new theme:", pady=10)
+        label.pack()
+        
+        name_var = tk.StringVar()
+        entry = ttk.Entry(dialog, textvariable=name_var, width=40)
+        entry.pack(pady=5)
+        entry.focus()
+        
+        button_frame = tk.Frame(dialog)
+        button_frame.pack(pady=15)
+        
+        def on_create():
+            name = name_var.get().strip()
+            if not name:
+                tk.messagebox.showerror("Error", "Please enter a theme name.")
+                return
+            
+            theme_name = name.replace(" ", "_")
+            
+            program_dir = Path(__file__).parent
+            working_dir = program_dir / "My Themes"
+            
+            try:
+                working_dir.mkdir(exist_ok=True)
+                
+                theme_folder = working_dir / theme_name
+                if theme_folder.exists():
+                    tk.messagebox.showerror("Error", f"A theme named '{theme_name}' already exists.")
+                    return
+                
+                theme_folder.mkdir()
+                
+                placeholder_dir = program_dir / "Placeholder Assets"
+                preview_src = placeholder_dir / "preview.png"
+                preview_dst = theme_folder / "preview.png"
+                if preview_src.exists():
+                    import shutil
+                    shutil.copy(preview_src, preview_dst)
+                
+                default_theme = {
+                    "name": name
+                }
+                
+                import json
+                with open(theme_folder / "theme.json", "w", encoding="utf-8") as f:
+                    json.dump(default_theme, f, indent=2)
+                
+                result["name"] = theme_folder
+                result["created"] = True
+                dialog.destroy()
+                
+                self._load_theme_from_path(theme_folder)
+                
+                self.theme_edit_var.set(True)
+                self.theme_edit_btn.config(text="Exit Edit")
+                self.preview_panel.set_edit_mode(True)
+                
+                print(f"Theme '{name}' created successfully at: {theme_folder}")
+                
+            except Exception as e:
+                tk.messagebox.showerror("Error", f"Failed to create theme: {e}")
+        
+        def on_cancel():
+            dialog.destroy()
+        
+        create_btn = ttk.Button(button_frame, text="Create", command=on_create)
+        create_btn.pack(side="left", padx=5)
+        
+        cancel_btn = ttk.Button(button_frame, text="Cancel", command=on_cancel)
+        cancel_btn.pack(side="left", padx=5)
+        
+        dialog.bind("<Return>", lambda e: on_create())
+        
+        dialog.wait_window()
+        return result
     
     def _ask_apply_or_revert(self):
         """Ask user whether to apply or revert bezel changes"""
@@ -2454,6 +2976,8 @@ class App(TkinterDnD.Tk):
     # Zoom controls
     # -------------------------------------------------
     def zoom_in(self):
+        if self.theme_edit_var.get() and self.preview_panel.is_editing_focused():
+            return
         if self.zoom_index < len(self.zoom_levels) - 1:
             self.zoom_index += 1
             if hasattr(self.renderer, 'sound_manager'):
@@ -2461,6 +2985,8 @@ class App(TkinterDnD.Tk):
             self._apply_zoom()
     
     def zoom_out(self):
+        if self.theme_edit_var.get() and self.preview_panel.is_editing_focused():
+            return
         if self.zoom_index > 0:
             self.zoom_index -= 1
             if hasattr(self.renderer, 'sound_manager'):
@@ -2473,6 +2999,7 @@ class App(TkinterDnD.Tk):
             self.canvas_zoom = min(3.0, self.canvas_zoom + 0.25)
             self._apply_canvas_zoom()
             self._save_canvas_zoom()
+            self._play_canvas_zoom_sound("slider_increase")
     
     def canvas_zoom_out(self):
         """Zoom out the device on the canvas (does not affect screenshots)."""
@@ -2480,6 +3007,81 @@ class App(TkinterDnD.Tk):
             self.canvas_zoom = max(0.25, self.canvas_zoom - 0.25)
             self._apply_canvas_zoom()
             self._save_canvas_zoom()
+            self._play_canvas_zoom_sound("slider_decrease")
+    
+    def _play_canvas_zoom_sound(self, sound_name):
+        """Play a canvas zoom sound from assets."""
+        try:
+            import pygame
+            sound_path = Path(__file__).parent / "assets" / "audio" / f"sfx_{sound_name}.ogg"
+            if sound_path.exists():
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                sound = pygame.mixer.Sound(str(sound_path))
+                sound.play()
+        except Exception:
+            pass
+    
+    def _play_theme_loading_sound(self):
+        """Start playing the theme loading sound (loops until stopped)."""
+        try:
+            import pygame
+            sound_path = Path(__file__).parent / "assets" / "audio" / "sfx_source_loading.ogg"
+            if sound_path.exists():
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                # Stop any existing loading sound first
+                if hasattr(self, '_loading_sound') and self._loading_sound:
+                    self._loading_sound.stop()
+                self._loading_sound = pygame.mixer.Sound(str(sound_path))
+                self._loading_sound.play(loops=-1)
+        except Exception:
+            pass
+    
+    def _stop_loading_sound_and_play_complete(self):
+        """Stop loading sound and play the completion sound."""
+        try:
+            import pygame
+            # Stop the looping loading sound
+            if hasattr(self, '_loading_sound') and self._loading_sound:
+                self._loading_sound.stop()
+                self._loading_sound = None
+            
+            # Play completion sound
+            sound_path = Path(__file__).parent / "assets" / "audio" / "sfx_source_loading_complete.ogg"
+            if sound_path.exists():
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                sound = pygame.mixer.Sound(str(sound_path))
+                sound.play()
+        except Exception:
+            pass
+    
+    def _play_menu_sound(self):
+        """Play the context menu sound."""
+        try:
+            import pygame
+            sound_path = Path(__file__).parent / "assets" / "audio" / "sfx_context_menu.ogg"
+            if sound_path.exists():
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                sound = pygame.mixer.Sound(str(sound_path))
+                sound.play()
+        except Exception:
+            pass
+    
+    def _play_folder_open_sound(self):
+        """Play the folder open sound."""
+        try:
+            import pygame
+            sound_path = Path(__file__).parent / "assets" / "audio" / "folder_open.ogg"
+            if sound_path.exists():
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+                sound = pygame.mixer.Sound(str(sound_path))
+                sound.play()
+        except Exception:
+            pass
     
     def _print_debug_info(self):
         """Print debug info about grid and screen positions."""
@@ -2636,6 +3238,8 @@ class App(TkinterDnD.Tk):
         self.config["Misc"]["magnify_size"] = str(getattr(self, "magnify_size", 200))
         self.config["Misc"]["bezel"] = self.bezel_var.get()
         self.config["Misc"]["zoom_index"] = str(self.zoom_index)
+        self.config["Misc"]["preview_panel_width"] = str(getattr(self, "preview_panel_width", 25))
+        self.config["Misc"]["editor_panel_width"] = str(getattr(self, "editor_panel_width", 0))
 
         with open(self.settings_path, "w") as f:
             self.config.write(f)

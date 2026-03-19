@@ -18,16 +18,19 @@ The intent of this project is to be an accurate theme previewer for the use of g
 ## Features
 ### Software Specific
 
-- **Bezel Edit Mode** Allows for setup of custom bezels using a built in editor. Completed bezels can be shared by sharing the folder containing the images and device.json file.
+- **Theme Edit Mode** Allows for creation of new themes and editing of existing ones. Currently supports editing of theme.json with live preview of compatible fields.
+- **Bezel Edit Mode** Allows for setup of custom bezels using a built in editor. Completed bezels can be shared by sharing the folder containing the images and device.json file. Includes optional magnifier panel.
 - **Screenshots** Allows for screenshots of the device for sharing or use in theme display. Ctrl click for transparent cropped variant.
 - **Remember Last Theme** For ease of development the software can remember and reload into the last opened theme folder.
 - **Drag and Drop** Drag in theme folders to load them more easily.  
+- **Canvas Zoom** If you feel the on screen device is too large or too small you can change the zoom level using the bottom left buttons.
 
 ### Cocoon Supported
 
-- **Theme.json + Preview** All fields and images populate within the preview panel following the order shown within the wiki. Colors include preview circles and is collapsible .
-- **Wallpapers** Supports both screens both animated, static, and video. Support for wallpaper aliases and asigning based on theme.json.
-- **Smart Folders + Smart Folders/By Platform**  Support for hero, icon, and logo. Properly displayed when selected like on native. (Logo sizing currently inaccurate).
+- **Theme.json + Preview Image** All fields and images populate within the preview panel following the order shown within the wiki. Colors include preview circles and is collapsible .
+- **Wallpapers** Supports both screens both animated, static, and video. Support for wallpaper aliases and asigning based on theme.json specification.
+- **SFX/BGM**  Supports live preview of select sfx sounds (grid_zoom_in, grid_zoom_out, navigate) and full support for bgm options. Matching music menu controller for controlling live preview.
+- **Smart Folders + Smart Folders/By Platform**  Support for hero, icon, and logo. Properly displayed when selected like on native.
 - **Icon Overlays** Support for mask and overlay. Populated with random image from "assets/games"; insert images there to be randomly chosen. Matching names to console will be chosen first for consoles, allows for multiple options using underscores. I.E. gba.gif & gba_blue.png will be matched to gba icon overlay if exists.
 - **Apps Dock** Similar to game images for icon overlays there is an apps folder for populating image that'll be randomly chosen from to fill your app dock. Images will automatically be masked into circles.
 - **Default Folder Colors** Right click on the default folder to change its color.
@@ -39,7 +42,6 @@ The intent of this project is to be an accurate theme previewer for the use of g
 
 ### Cocoon Not Supported
 
-- **SFX/BGM**  
 - **Theme.json Colors**   
 - **Hero Masking**  
 - **Hero/Logo Animation**  
@@ -50,6 +52,7 @@ The intent of this project is to be an accurate theme previewer for the use of g
 
 | Key | Control |
 | --- | --- |
+| Arrows | Move Selection |
 | Tab | Bezel Cycle |
 | Shift Tab | Reverse Bezel Cycle |
 | L | Load Theme |
@@ -74,6 +77,7 @@ Alternatively install the requirements and run app.py.
 - **av + ffmpeg**
 - **tkinterdnd2**  
 - **opencv-python**  
+- **pygame**  
 
 ## Support
 

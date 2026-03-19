@@ -9,7 +9,7 @@ class MusicDialog(tk.Toplevel):
         super().__init__(parent)
         self.app = app
         self.title("Music")
-        self.geometry("300x220")
+        self.geometry("350x400")
         self.resizable(False, False)
         
         # Set window icon
@@ -103,6 +103,88 @@ class MusicDialog(tk.Toplevel):
         # Mode label
         self.mode_label = ttk.Label(main_frame, text="Mode: DISABLED", font=("Arial", 9))
         self.mode_label.pack(pady=(5, 0))
+        
+        # Volume controls section
+        vol_sep = ttk.Separator(main_frame, orient="horizontal")
+        vol_sep.pack(fill="x", pady=15)
+        
+        vol_label = ttk.Label(main_frame, text="Volume Settings", font=("Arial", 10, "bold"))
+        vol_label.pack(pady=(0, 10))
+        
+        # Master Volume
+        master_vol_frame = ttk.Frame(main_frame)
+        master_vol_frame.pack(fill="x", pady=2)
+        ttk.Label(master_vol_frame, text="Master:").pack(side="left")
+        self.master_volume_var = tk.DoubleVar(value=getattr(self.app, 'master_volume', 1.0))
+        master_slider = ttk.Scale(
+            master_vol_frame,
+            from_=0,
+            to=1,
+            variable=self.master_volume_var,
+            orient="horizontal",
+            command=self._on_master_volume_change
+        )
+        master_slider.pack(side="left", fill="x", expand=True, padx=(10, 5))
+        self.master_volume_label = ttk.Label(master_vol_frame, text=f"{int(self.master_volume_var.get() * 100)}%")
+        self.master_volume_label.pack(side="left", padx=(5, 0))
+        
+        # SFX Volume
+        sfx_vol_frame = ttk.Frame(main_frame)
+        sfx_vol_frame.pack(fill="x", pady=2)
+        ttk.Label(sfx_vol_frame, text="SFX:").pack(side="left")
+        self.sfx_volume_var = tk.DoubleVar(value=getattr(self.app, 'sfx_volume', 1.0))
+        sfx_slider = ttk.Scale(
+            sfx_vol_frame,
+            from_=0,
+            to=1,
+            variable=self.sfx_volume_var,
+            orient="horizontal",
+            command=self._on_sfx_volume_change
+        )
+        sfx_slider.pack(side="left", fill="x", expand=True, padx=(10, 5))
+        self.sfx_volume_label = ttk.Label(sfx_vol_frame, text=f"{int(self.sfx_volume_var.get() * 100)}%")
+        self.sfx_volume_label.pack(side="left", padx=(5, 0))
+        
+        # Music Volume
+        music_vol_frame = ttk.Frame(main_frame)
+        music_vol_frame.pack(fill="x", pady=2)
+        ttk.Label(music_vol_frame, text="Music:").pack(side="left")
+        self.music_volume_var = tk.DoubleVar(value=getattr(self.app, 'music_volume', 1.0))
+        music_slider = ttk.Scale(
+            music_vol_frame,
+            from_=0,
+            to=1,
+            variable=self.music_volume_var,
+            orient="horizontal",
+            command=self._on_music_volume_change
+        )
+        music_slider.pack(side="left", fill="x", expand=True, padx=(10, 5))
+        self.music_volume_label = ttk.Label(music_vol_frame, text=f"{int(self.music_volume_var.get() * 100)}%")
+        self.music_volume_label.pack(side="left", padx=(5, 0))
+    
+    def _on_master_volume_change(self, value):
+        val = float(value)
+        self.app.master_volume = val
+        if hasattr(self.app.renderer, 'sound_manager'):
+            self.app.renderer.sound_manager.set_master_volume(val)
+        self.master_volume_label.config(text=f"{int(val * 100)}%")
+        self.app.save_settings()
+    
+    def _on_sfx_volume_change(self, value):
+        val = float(value)
+        self.app.sfx_volume = val
+        if hasattr(self.app.renderer, 'sound_manager'):
+            self.app.renderer.sound_manager.set_sfx_volume(val)
+        self.sfx_volume_label.config(text=f"{int(val * 100)}%")
+        self.app.save_settings()
+    
+    def _on_music_volume_change(self, value):
+        val = float(value)
+        self.app.music_volume = val
+        if hasattr(self.app.renderer, 'sound_manager'):
+            self.app.renderer.sound_manager.set_music_volume(val)
+        self.music_volume_label.config(text=f"{int(val * 100)}%")
+        self.app.save_settings()
     
     def _on_play_pause(self):
         if hasattr(self.app.renderer, 'music_manager'):
@@ -164,3 +246,16 @@ class MusicDialog(tk.Toplevel):
         
         # Update mode
         self.mode_label.config(text=f"Mode: {mm.mode}")
+        
+        # Update volume sliders
+        if hasattr(self, 'master_volume_var'):
+            self.master_volume_var.set(getattr(self.app, 'master_volume', 1.0))
+            self.master_volume_label.config(text=f"{int(self.master_volume_var.get() * 100)}%")
+        
+        if hasattr(self, 'sfx_volume_var'):
+            self.sfx_volume_var.set(getattr(self.app, 'sfx_volume', 1.0))
+            self.sfx_volume_label.config(text=f"{int(self.sfx_volume_var.get() * 100)}%")
+        
+        if hasattr(self, 'music_volume_var'):
+            self.music_volume_var.set(getattr(self.app, 'music_volume', 1.0))
+            self.music_volume_label.config(text=f"{int(self.music_volume_var.get() * 100)}%")

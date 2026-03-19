@@ -1,3 +1,6 @@
+import os
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = '1'
+
 from pathlib import Path
 import json
 import random
@@ -38,11 +41,6 @@ class SoundManager:
         self._master_volume = 1.0
         self._sfx_volume = 1.0
         self._music_volume = 1.0
-
-        self._theme_sfx_volume = 1.0
-        self._theme_music_volume = 1.0
-        self._theme_sfx_volume_set = False
-        self._theme_music_volume_set = False
 
         if not SoundManager._initialized and PYGAME_AVAILABLE:
             try:
@@ -135,62 +133,49 @@ class SoundManager:
 
         sound = self._sound_cache.get(sound_name.lower())
         if sound:
-            if self._theme_sfx_volume_set:
-                effective_volume = self._master_volume * self._theme_sfx_volume
-            else:
-                effective_volume = self._master_volume * self._sfx_volume
+            effective_volume = self._master_volume * self._sfx_volume
             sound.set_volume(effective_volume)
             sound.play()
-
-    def set_theme_sfx_volume(self, volume: float):
-        """Set the theme-defined SFX volume (0.0 to 1.0)."""
-        self._theme_sfx_volume = max(0.0, min(1.0, volume))
-        self._theme_sfx_volume_set = True
-
-    def set_theme_music_volume(self, volume: float):
-        """Set the theme-defined music volume (0.0 to 1.0)."""
-        self._theme_music_volume = max(0.0, min(1.0, volume))
-        self._theme_music_volume_set = True
-        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
-            try:
-                if self._theme_music_volume_set:
-                    pygame.mixer.music.set_volume(self._master_volume * self._theme_music_volume)
-                else:
-                    pygame.mixer.music.set_volume(self._master_volume * self._music_volume)
-            except:
-                pass
-
+    
+    def _update_sfx_cache(self):
+        """Update volume on all cached SFX sounds."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+        effective = self._master_volume * self._sfx_volume
+        for sound in self._sound_cache.values():
+            sound.set_volume(effective)
+    
+    def _apply_music_volume(self):
+        """Apply effective music volume to pygame."""
+        if not PYGAME_AVAILABLE or not SoundManager._mixer_initialized:
+            return
+        effective = self._master_volume * self._music_volume
+        pygame.mixer.music.set_volume(effective)
+    
     def set_master_volume(self, volume: float):
         """Set master volume (0.0 to 1.0)."""
         self._master_volume = max(0.0, min(1.0, volume))
-
+        self._apply_music_volume()
+        self._update_sfx_cache()
+    
     def get_master_volume(self) -> float:
         return self._master_volume
-
+    
     def set_sfx_volume(self, volume: float):
         """Set SFX volume (0.0 to 1.0)."""
         self._sfx_volume = max(0.0, min(1.0, volume))
-
+        self._update_sfx_cache()
+    
     def get_sfx_volume(self) -> float:
         return self._sfx_volume
-
+    
     def set_music_volume(self, volume: float):
         """Set music volume (0.0 to 1.0)."""
         self._music_volume = max(0.0, min(1.0, volume))
-        if PYGAME_AVAILABLE and SoundManager._mixer_initialized:
-            try:
-                if self._theme_music_volume_set:
-                    pygame.mixer.music.set_volume(self._master_volume * self._theme_music_volume)
-                else:
-                    pygame.mixer.music.set_volume(self._master_volume * self._music_volume)
-            except:
-                pass
-
+        self._apply_music_volume()
+    
     def get_music_volume(self) -> float:
         return self._music_volume
-
-    def get_theme_music_volume(self) -> float:
-        return self._theme_music_volume
 
     def play_music(self, filepath: str, loops: int = -1):
         """Play background music."""
@@ -199,10 +184,7 @@ class SoundManager:
 
         try:
             pygame.mixer.music.load(filepath)
-            if self._theme_music_volume_set:
-                pygame.mixer.music.set_volume(self._master_volume * self._theme_music_volume)
-            else:
-                pygame.mixer.music.set_volume(self._master_volume * self._music_volume)
+            self._apply_music_volume()
             pygame.mixer.music.play(loops=loops)
         except Exception as e:
             print(f"[SoundManager] Failed to play music: {e}")
@@ -239,8 +221,6 @@ class MusicManager:
         self._shuffled_playlist = []
         
         self._last_schedule_check_hour = -1
-        self._theme_music_volume = 1.0
-        self._theme_music_volume_set = False
         
         self._paused = False
         self._user_paused = False
@@ -310,20 +290,6 @@ class MusicManager:
         if playlist_str:
             self._parse_playlist(playlist_str, theme_path, placeholder_path)
         
-        # Determine volume: use theme if set, else fallback to placeholder, else use user default
-        self._theme_music_volume_set = False
-        if "music_volume" in theme_data:
-            self._theme_music_volume = float(theme_data.get("music_volume", 1.0))
-            self._theme_music_volume_set = True
-        elif "music_volume" in placeholder_data:
-            self._theme_music_volume = float(placeholder_data.get("music_volume", 1.0))
-            self._theme_music_volume_set = True
-        else:
-            self._theme_music_volume = 1.0
-        
-        # Apply volume to sound manager
-        self._sound_manager.set_theme_music_volume(self._theme_music_volume if self._theme_music_volume_set else 1.0)
-        
         # Auto-start if not disabled
         if self._mode != "DISABLED":
             self.play()
@@ -387,13 +353,10 @@ class MusicManager:
         return None
 
     def _get_effective_volume(self) -> float:
-        """Calculate effective volume: master × user_music × theme_music (if set)"""
+        """Calculate effective volume: master × music_volume"""
         master = self._sound_manager.get_master_volume()
         user_music = self._sound_manager.get_music_volume()
-        if self._theme_music_volume_set:
-            return master * user_music * self._theme_music_volume
-        else:
-            return master * user_music
+        return master * user_music
 
     def play(self):
         """Start playing music based on mode."""
@@ -1693,6 +1656,11 @@ class Renderer:
         current_cols = int(round(self._current_grid_cols))
         
         if current_rows == rows and current_cols == cols:
+            # Explicitly sync values to ensure consistency
+            self.GRID_ROWS = rows
+            self.GRID_COLS = cols
+            self._current_grid_rows = float(rows)
+            self._current_grid_cols = float(cols)
             return
         
         # Reset zoom ended flag at start of new zoom
@@ -2677,10 +2645,6 @@ class Renderer:
         self._next_game_img_index = 0
         self.theme_path = theme_path if theme_path else PLACEHOLDER_DIR
         
-        # Reset theme volume flags so new theme starts fresh
-        self.sound_manager._theme_sfx_volume_set = False
-        self.sound_manager._theme_music_volume_set = False
-        
         # Clear wallpaper data from previous theme (critical for switching away from video themes!)
         self.screen_manager.main.clear_wallpaper()
         self.screen_manager.external.clear_wallpaper()
@@ -2699,11 +2663,7 @@ class Renderer:
             except Exception:
                 self.theme_data = {}
 
-        # Load sounds and set volume from theme (only if explicitly defined in theme.json)
-        if "sfx_volume" in self.theme_data:
-            self.sound_manager.set_theme_sfx_volume(float(self.theme_data.get("sfx_volume", 1.0)))
-        if "music_volume" in self.theme_data:
-            self.sound_manager.set_theme_music_volume(float(self.theme_data.get("music_volume", 1.0)))
+        # Load sounds (volume is handled by app on theme load)
         self.sound_manager.load_theme_sounds(self.theme_path)
         
         # Load music configuration and start playback
@@ -3590,12 +3550,25 @@ class Renderer:
         def paste(img, x, y, w, h):
             if not img:
                 return
-            key = (id(img), w, h)
+            img_w, img_h = img.size
+            
+            # Fit vertically: scale to match target height
+            fit_scale = h / img_h
+            fit_w = round(img_w * fit_scale)
+            
+            # If fitted width would be less than target width (would leave gaps), stretch instead
+            if fit_w < w:
+                target_w, target_h = w, h
+            else:
+                target_w, target_h = fit_w, h
+                # Center horizontally
+                x = x + (w - target_w) // 2
+            
+            key = (id(img), target_w, target_h)
             resized = self._resize_cache.get(key)
             if resized is None:
-                # Use NEAREST during zoom for speed, BILINEAR otherwise
                 resample = Image.Resampling.NEAREST if self._zoom_anim_start is not None else Image.Resampling.BILINEAR
-                resized = img.resize((w, h), resample)
+                resized = img.resize((target_w, target_h), resample)
                 self._resize_cache[key] = resized
             base.alpha_composite(resized, (x, y))
 
@@ -4319,9 +4292,23 @@ class Renderer:
                 # Combine masks
                 combined_mask = ImageChops.multiply(screen_mask, bottom_mask)
                 
-                # Resize wallpaper to fit
-                wallpaper_resized = main_wallpaper.resize((main_w, main_h), Image.Resampling.BILINEAR)
-                masked_wallpaper = Image.composite(wallpaper_resized, Image.new("RGBA", (main_w, main_h), 0), combined_mask)
+                # Resize wallpaper to fit vertically (or stretch if would leave gaps)
+                img_w, img_h = main_wallpaper.size
+                fit_scale = main_h / img_h
+                fit_w = round(img_w * fit_scale)
+                
+                if fit_w < main_w:
+                    # Would leave gaps, stretch instead
+                    wallpaper_resized = main_wallpaper.resize((main_w, main_h), Image.Resampling.BILINEAR)
+                else:
+                    # Fit vertically, center horizontally
+                    wallpaper_resized = main_wallpaper.resize((fit_w, main_h), Image.Resampling.BILINEAR)
+                    # Resize mask to match wallpaper
+                    combined_mask = combined_mask.resize((fit_w, main_h), Image.Resampling.BILINEAR)
+                    # Adjust x to center the wallpaper in the screen area
+                    main_x = main_x + (main_w - fit_w) // 2
+                
+                masked_wallpaper = Image.composite(wallpaper_resized, Image.new("RGBA", (fit_w, main_h), 0), combined_mask)
                 base.alpha_composite(masked_wallpaper, (main_x, main_y))
             
             # Draw hero/logo on top of wallpaper in single screen mode

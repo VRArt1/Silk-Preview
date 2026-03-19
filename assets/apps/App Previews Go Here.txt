@@ -1,0 +1,1 @@
+Place app preview images within this folder! "app drawer.png" will always display on the left unless deleted.
