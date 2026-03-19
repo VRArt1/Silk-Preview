@@ -3,10 +3,13 @@ from tkinter import ttk
 from pathlib import Path
 from PIL import Image, ImageTk
 
+from widgets.utils import center_to_parent
+
 
 class MusicDialog(tk.Toplevel):
     def __init__(self, parent, app):
         super().__init__(parent)
+        self.withdraw()
         self.app = app
         self.title("Music")
         self.geometry("350x400")
@@ -33,6 +36,9 @@ class MusicDialog(tk.Toplevel):
         # Start update timer
         self._update_timer = None
         self._start_update_timer()
+        
+        center_to_parent(self, parent)
+        self.deiconify()
     
     def _start_update_timer(self):
         """Periodically update UI to show current track."""

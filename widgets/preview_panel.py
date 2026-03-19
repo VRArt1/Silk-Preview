@@ -76,10 +76,10 @@ class PreviewPanel(ttk.Frame):
         self.edit_toolbar.columnconfigure(0, weight=1)
         self.edit_toolbar.columnconfigure(1, weight=1)
         
-        self.save_btn = ttk.Button(self.edit_toolbar, text="Save", command=self._save_theme, state="disabled")
+        self.save_btn = ttk.Button(self.edit_toolbar, text="Save", command=self._save_theme)
         self.save_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2))
         
-        self.revert_btn = ttk.Button(self.edit_toolbar, text="Revert", command=self._revert_changes, state="disabled")
+        self.revert_btn = ttk.Button(self.edit_toolbar, text="Revert", command=self._revert_changes)
         self.revert_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0))
         
         self.edit_toolbar.grid_remove()
@@ -165,8 +165,8 @@ class PreviewPanel(ttk.Frame):
         if enabled:
             self._edit_widgets.clear()
             self._has_unsaved_changes = False
-            self.save_btn.config(state="disabled")
-            self.revert_btn.config(state="disabled")
+            self.save_btn.config(state="normal")
+            self.revert_btn.config(state="normal")
             self.edit_toolbar.grid()
         else:
             self.edit_toolbar.grid_remove()
@@ -220,6 +220,34 @@ class PreviewPanel(ttk.Frame):
             return False
         
         current_data = self._collect_edit_values()
+        
+        # Check if music/sounds folders exist (same logic as _save_theme)
+        music_folder = theme_path / "music" if theme_path else None
+        has_music = bool(music_folder and music_folder.exists() and list(music_folder.glob("*")))
+        
+        sounds_folder = theme_path / "sounds" if theme_path else None
+        has_sounds = bool(sounds_folder and sounds_folder.exists() and list(sounds_folder.glob("*")))
+        
+        # If saved data doesn't have music_volume and user hasn't changed it from default (1.0), don't flag as change
+        if "music_volume" not in saved_data and "music_volume" in current_data:
+            current_vol = current_data.get("music_volume", 1.0)
+            # Normalize for comparison (string "1.0" vs float 1.0)
+            try:
+                current_vol = float(current_vol)
+            except (ValueError, TypeError):
+                pass
+            if current_vol == 1.0:
+                del current_data["music_volume"]
+        
+        # If saved data doesn't have sfx_volume and user hasn't changed it from default (1.0), don't flag as change
+        if "sfx_volume" not in saved_data and "sfx_volume" in current_data:
+            current_vol = current_data.get("sfx_volume", 1.0)
+            try:
+                current_vol = float(current_vol)
+            except (ValueError, TypeError):
+                pass
+            if current_vol == 1.0:
+                del current_data["sfx_volume"]
         
         saved_clean = self._clean_theme_data(saved_data)
         current_clean = self._clean_theme_data(current_data)
@@ -276,12 +304,10 @@ class PreviewPanel(ttk.Frame):
             json_path = theme_path / "theme.json"
             try:
                 with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(cleaned, f, indent=2, ensure_ascii=False)
+                    f.write(self._format_theme_json(cleaned))
                 
                 self.renderer.theme_data = cleaned
                 self._theme_data_hash = None
-                self.save_btn.config(state="disabled")
-                self.revert_btn.config(state="disabled")
                 self._has_unsaved_changes = False
                 self.load_theme_info()
                 
@@ -503,7 +529,7 @@ class PreviewPanel(ttk.Frame):
                 pass
     
     def _clean_theme_data(self, data):
-        """Remove empty fields from theme data."""
+        """Remove empty fields and normalize values for consistent comparison."""
         cleaned = {}
         for key, value in data.items():
             if value is None:
@@ -512,6 +538,17 @@ class PreviewPanel(ttk.Frame):
                 continue
             if isinstance(value, list) and len(value) == 0:
                 continue
+            
+            # Normalize types for comparison consistency
+            if isinstance(value, str):
+                stripped = value.strip()
+                # Convert numeric strings to floats (JSON numbers are floats)
+                try:
+                    if '.' in stripped or (stripped.lstrip('-').isdigit() and stripped):
+                        value = float(stripped)
+                except (ValueError, AttributeError):
+                    pass  # Keep as string
+            
             if isinstance(value, dict):
                 nested = self._clean_theme_data(value)
                 if nested:
@@ -519,6 +556,12 @@ class PreviewPanel(ttk.Frame):
             else:
                 cleaned[key] = value
         return cleaned
+    
+    def _format_theme_json(self, data):
+        """Format theme data as JSON with Cocoon's spacing conventions."""
+        if not getattr(self.app, 'cocoon_json_format', True):
+            return json.dumps(data, indent=2, ensure_ascii=False)
+        return format_theme_json_string(data)
     
     def _collect_edit_values(self):
         """Collect values from all edit widgets."""
@@ -1160,3 +1203,160 @@ class PreviewPanel(ttk.Frame):
         draw = ImageDraw.Draw(img)
         draw.ellipse((1, 1, size - 2, size - 2), fill=hex_color, outline="#000000")
         return ImageTk.PhotoImage(img)
+
+
+THEME_SECTIONS = [
+    ("metadata", ["name", "author", "version", "description", "credits", "website"]),
+    ("theme_mode", ["theme_mode"]),
+    ("color_scheme", ["color_scheme"]),
+    ("wallpapers", ["wallpaper_main", "wallpaper_external"]),
+    ("music", ["music_mode", "music_playback_mode", "music_playlist", "music_time_schedule", "sfx_volume", "music_volume"]),
+]
+
+COLOR_SCHEME_GROUPS = [
+    ["background_gradient_start", "background_gradient_end"],
+    ["card_gradient_start", "card_gradient_end"],
+    ["text_primary", "text_secondary"],
+    ["icon_tint"],
+    ["tile_background", "tile_border"],
+    ["toggle_off_gradient_start", "toggle_off_gradient_end", "toggle_thumb_gradient_start", "toggle_thumb_gradient_end"],
+    ["drop_shadow", "inner_shadow_light", "inner_shadow_dark"],
+    ["success", "warning", "divider"],
+    ["accent_gradient_start", "accent_gradient_end", "accent_glow"],
+]
+
+
+def _section_exists(data, keys):
+    """Check if any of the keys exist in the data."""
+    for key in keys:
+        if key in data:
+            return True
+    return False
+
+
+def _get_last_metadata_key(data):
+    """Get the last metadata key that exists in data."""
+    metadata_keys = ["name", "author", "version", "description", "credits", "website"]
+    for key in reversed(metadata_keys):
+        if key in data:
+            return key
+    return None
+
+
+def _get_first_music_key(data):
+    """Get the first music key that exists in data."""
+    music_keys = ["music_mode", "music_playback_mode", "music_playlist", "music_time_schedule", "sfx_volume", "music_volume"]
+    for key in music_keys:
+        if key in data:
+            return key
+    return None
+
+
+def _format_color_scheme_section(json_str):
+    """Add blank lines between color scheme groups."""
+    for i, group in enumerate(COLOR_SCHEME_GROUPS):
+        last_key = group[-1]
+        if i < len(COLOR_SCHEME_GROUPS) - 1:
+            next_group = COLOR_SCHEME_GROUPS[i + 1]
+            next_key = next_group[0]
+            
+            pattern = rf'("{last_key}": "[^"]*",)(\n    "{next_key}")'
+            replacement = r'\1\n\2'
+            json_str = re.sub(pattern, replacement, json_str)
+    
+    return json_str
+
+
+def format_theme_json_string(data):
+    """Format theme data as JSON with Cocoon's spacing conventions."""
+    json_str = json.dumps(data, indent=2, ensure_ascii=False)
+    
+    present_sections = []
+    for section_name, section_keys in THEME_SECTIONS:
+        if _section_exists(data, section_keys):
+            present_sections.append((section_name, section_keys))
+    
+    for i, (section_name, section_keys) in enumerate(present_sections):
+        if section_name == "metadata":
+            if _section_exists(data, ["website"]) and _section_exists(data, ["theme_mode"]):
+                json_str = re.sub(
+                    r'(\n  "website": "[^"]*",)(\n  "theme_mode")',
+                    r'\1\n\2',
+                    json_str
+                )
+            
+            if not _section_exists(data, ["theme_mode"]) and i < len(present_sections) - 1:
+                next_section_name = present_sections[i + 1][0]
+                last_meta = _get_last_metadata_key(data)
+                if last_meta:
+                    if next_section_name == "color_scheme":
+                        json_str = re.sub(
+                            rf'("{last_meta}": "[^"]*",)(\n  "{next_section_name}")',
+                            r'\1\n\2',
+                            json_str
+                        )
+                    elif next_section_name == "wallpapers":
+                        next_key = "wallpaper_main" if _section_exists(data, ["wallpaper_main"]) else "wallpaper_external"
+                        json_str = re.sub(
+                            rf'("{last_meta}": "[^"]*",)(\n  "{next_key}")',
+                            r'\1\n\2',
+                            json_str
+                        )
+                    elif next_section_name == "music":
+                        next_key = _get_first_music_key(data)
+                        if next_key:
+                            json_str = re.sub(
+                                rf'("{last_meta}": "[^"]*",)(\n  "{next_key}")',
+                                r'\1\n\2',
+                                json_str
+                            )
+        
+        elif section_name == "theme_mode":
+            if i < len(present_sections) - 1:
+                next_section_name, next_section_keys = present_sections[i + 1]
+                if next_section_name == "color_scheme":
+                    json_str = re.sub(
+                        r'(\n  "theme_mode": "[^"]*",)(\n  "color_scheme")',
+                        r'\1\n\2',
+                        json_str
+                    )
+                elif next_section_name == "wallpapers":
+                    json_str = re.sub(
+                        r'(\n  "theme_mode": "[^"]*",)(\n  "wallpaper_main")',
+                        r'\1\n\2',
+                        json_str
+                    )
+                elif next_section_name == "music":
+                    json_str = re.sub(
+                        r'(\n  "theme_mode": "[^"]*",)(\n  "music_mode")',
+                        r'\1\n\2',
+                        json_str
+                    )
+        
+        elif section_name == "color_scheme":
+            json_str = _format_color_scheme_section(json_str)
+            
+            if i < len(present_sections) - 1:
+                next_section_name, next_section_keys = present_sections[i + 1]
+                if next_section_name == "wallpapers" and _section_exists(data, next_section_keys):
+                    json_str = re.sub(
+                        r'("accent_glow": "[^"]*"\n  },)(\n  "wallpaper_main")',
+                        r'\1\n\2',
+                        json_str
+                    )
+                elif next_section_name == "music":
+                    json_str = re.sub(
+                        r'("accent_glow": "[^"]*"\n  },)(\n  "music_mode")',
+                        r'\1\n\2',
+                        json_str
+                    )
+        
+        elif section_name == "wallpapers":
+            if _section_exists(data, ["wallpaper_external"]) and _section_exists(data, ["music_mode"]):
+                json_str = re.sub(
+                    r'(\n  "wallpaper_external": "[^"]*",)(\n  "music_mode")',
+                    r'\1\n\2',
+                    json_str
+                )
+    
+    return json_str

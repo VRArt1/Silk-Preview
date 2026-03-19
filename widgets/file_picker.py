@@ -16,7 +16,7 @@ class FilePickerWidget(ttk.Frame):
     """
     def __init__(self, parent, theme_path=None, allowed_extensions=None, 
                  relative_folder=None, on_change=None, allow_empty=True, name_pattern=None,
-                 on_file_changed=None, on_file_deleted=None, width=20):
+                 on_file_changed=None, on_file_deleted=None, on_file_replacing=None, width=20):
         super().__init__(parent)
         
         self.theme_path = theme_path
@@ -27,6 +27,7 @@ class FilePickerWidget(ttk.Frame):
         self.name_pattern = name_pattern  # e.g., "main" or "external" for wallpapers
         self.on_file_changed = on_file_changed  # Callback when file is added/changed
         self.on_file_deleted = on_file_deleted  # Callback when file is deleted
+        self.on_file_replacing = on_file_replacing  # Callback before old file is deleted
         self.width = width  # Width for entry field
         
         self.current_value = ""
@@ -122,10 +123,13 @@ class FilePickerWidget(ttk.Frame):
                 dest_path = dest_folder / f"{self.name_pattern}{ext}"
                 
                 # Delete any existing file with same name but different extension
-                for old_ext in ['.ogg', '.mp3', '.wav', '.flac', '.m4a']:
+                for old_ext in self.allowed_extensions:
                     if old_ext != ext:
                         old_file = dest_folder / f"{self.name_pattern}{old_ext}"
                         if old_file.exists():
+                            # Call callback before deleting (e.g., to stop video player)
+                            if self.on_file_replacing:
+                                self.on_file_replacing(str(old_file))
                             old_file.unlink()
             else:
                 dest_path = dest_folder / path.name
@@ -290,7 +294,7 @@ class ColorInputWidget(ttk.Frame):
     def _on_pick(self):
         from widgets.color_picker import ColorPickerDialog
         
-        dialog = ColorPickerDialog(self.winfo_toplevel(), self.current_color, "Pick Color")
+        dialog = ColorPickerDialog(self.winfo_toplevel(), self.current_color, "Color Picker")
         color = dialog.get_color()
         
         if color:

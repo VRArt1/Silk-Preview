@@ -2636,6 +2636,7 @@ class Renderer:
 
         # Also clear resize cache so old wallpaper sizes aren't reused
         self._resize_cache.clear()
+        self._game_image_cache.clear()
         
         self.video_frame_cache.clear()
 

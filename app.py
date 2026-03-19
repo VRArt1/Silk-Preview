@@ -13,6 +13,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 from renderer import Renderer
 from widgets.preview_panel import PreviewPanel
 from video_player import VideoPlayerManager
+from widgets.utils import center_to_parent
 
 
 class App(TkinterDnD.Tk):
@@ -165,6 +166,11 @@ class App(TkinterDnD.Tk):
             self.config["Settings"]["music_volume"] = "1.0"
         self.music_volume = self.config.getfloat("Settings", "music_volume", fallback=1.0)
         
+        # cocoon_json_format
+        if "cocoon_json_format" not in self.config["Settings"]:
+            self.config["Settings"]["cocoon_json_format"] = "True"
+        self.cocoon_json_format = self.config.getboolean("Settings", "cocoon_json_format", fallback=True)
+        
         # preview_panel_width (stored as pixels)
         if "preview_panel_width" not in self.config["Misc"]:
             self.config["Misc"]["preview_panel_width"] = "300"
@@ -280,8 +286,20 @@ class App(TkinterDnD.Tk):
                 initial_theme_folder = remembered_path
         
         # ----------------------------
-        # Main layout
+        # Menu Bar
         # ----------------------------
+        self.menubar = tk.Menu(self)
+        TkinterDnD.Tk.config(self, menu=self.menubar)
+        
+        self.theme_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Theme", menu=self.theme_menu)
+        self.theme_menu.add_command(label="Load Theme", command=self.load_theme, accelerator="L")
+        self.theme_menu.add_command(label="Refresh Theme", command=self.refresh, accelerator="R")
+        self.theme_menu.add_separator()
+        self.theme_menu.add_command(label="New Theme", command=self.create_new_theme)
+        self.theme_menu.add_command(label="Edit Theme", command=self.toggle_theme_edit_mode)
+        
+        # Main layout
         self.main_frame = tk.Frame(self)
         self.main_frame.pack(fill="both", expand=True)
         
@@ -2130,6 +2148,7 @@ class App(TkinterDnD.Tk):
         dialog.grab_set()
         
         dialog.geometry("300x120")
+        center_to_parent(dialog, self)
         
         result = {"action": "cancel"}
         
@@ -2181,6 +2200,7 @@ class App(TkinterDnD.Tk):
         dialog.grab_set()
         
         dialog.geometry("350x150")
+        center_to_parent(dialog, self)
         
         result = {"name": None, "created": False}
         
@@ -2227,9 +2247,14 @@ class App(TkinterDnD.Tk):
                     "name": name
                 }
                 
+                from widgets.preview_panel import format_theme_json_string
                 import json
+                if self.cocoon_json_format:
+                    formatted = format_theme_json_string(default_theme)
+                else:
+                    formatted = json.dumps(default_theme, indent=2, ensure_ascii=False)
                 with open(theme_folder / "theme.json", "w", encoding="utf-8") as f:
-                    json.dump(default_theme, f, indent=2)
+                    f.write(formatted)
                 
                 result["name"] = theme_folder
                 result["created"] = True
@@ -2270,6 +2295,7 @@ class App(TkinterDnD.Tk):
         
         # Center the dialog
         dialog.geometry("300x120")
+        center_to_parent(dialog, self)
         
         result = {"action": "cancel"}
         
@@ -2311,6 +2337,7 @@ class App(TkinterDnD.Tk):
         dialog.grab_set()
         
         dialog.geometry("350x150")
+        center_to_parent(dialog, self)
         
         result = {"setup": False}
         

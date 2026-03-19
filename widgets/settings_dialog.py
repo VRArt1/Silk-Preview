@@ -3,10 +3,13 @@ from tkinter import ttk
 from pathlib import Path
 from PIL import Image, ImageTk, ImageEnhance
 
+from widgets.utils import center_to_parent
+
 
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, app):
         super().__init__(parent)
+        self.withdraw()
         self.app = app
         self.title("Settings")
         self.geometry("420x550")
@@ -175,6 +178,15 @@ class SettingsDialog(tk.Toplevel):
         )
         video_playback_check.pack(anchor="w")
         
+        self.cocoon_json_format_var = tk.BooleanVar(value=getattr(app, 'cocoon_json_format', True))
+        cocoon_json_format_check = ttk.Checkbutton(
+            options_frame,
+            text="Cocoon JSON Format",
+            variable=self.cocoon_json_format_var,
+            command=self._on_cocoon_json_format_change
+        )
+        cocoon_json_format_check.pack(anchor="w")
+        
         bg_frame = ttk.LabelFrame(self.scrollable_frame, text="UI", padding="10")
         bg_frame.pack(fill="x", pady=(0, 10))
         
@@ -217,6 +229,9 @@ class SettingsDialog(tk.Toplevel):
         screenshots_btn.pack(fill="x")
         
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+        
+        center_to_parent(self, parent)
+        self.deiconify()
     
     def _get_bg_color(self):
         try:
@@ -430,6 +445,14 @@ class SettingsDialog(tk.Toplevel):
             self.app.renderer._invalidate_static_cache()
             self.app.redraw()
     
+    def _on_cocoon_json_format_change(self):
+        self.app.cocoon_json_format = self.cocoon_json_format_var.get()
+        if "Settings" not in self.app.config:
+            self.app.config["Settings"] = {}
+        self.app.config["Settings"]["cocoon_json_format"] = str(self.cocoon_json_format_var.get())
+        with open(self.app.settings_path, "w") as f:
+            self.app.config.write(f)
+    
     def _on_bg_scroll_speed_change(self, value):
         speed = int(float(value))
         self.bg_scroll_speed_var.set(speed)
@@ -471,6 +494,7 @@ class SettingsDialog(tk.Toplevel):
         self.bg_scroll_speed_label.config(text=f"{self.app.bg_scroll_speed}")
         self.reverse_direction_var.set(getattr(self.app, 'reverse_direction', False))
         self.video_playback_var.set(getattr(self.app, 'video_playback', True))
+        self.cocoon_json_format_var.set(getattr(self.app, 'cocoon_json_format', True))
         
         self._rebuild_accent_color_picker()
     

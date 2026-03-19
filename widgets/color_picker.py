@@ -1,8 +1,11 @@
 import tkinter as tk
 from tkinter import ttk
+from pathlib import Path
 from PIL import Image, ImageTk, ImageDraw
 import re
 import math
+
+from widgets.utils import center_to_parent
 
 HEX_COLOR_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
@@ -14,8 +17,20 @@ class ColorPickerDialog(tk.Toplevel):
         self.grab_set()
         
         self.title(title)
-        self.geometry("400x500")
+        self.geometry("400x540")
         self.resizable(False, False)
+        center_to_parent(self, parent)
+        
+        icon_path = Path(__file__).parent.parent / "assets" / "favicon_color.png"
+        if icon_path.exists():
+            try:
+                icon_img = Image.open(icon_path)
+                if icon_img.mode != 'RGBA':
+                    icon_img = icon_img.convert('RGBA')
+                self._color_icon = ImageTk.PhotoImage(icon_img)
+                self.iconphoto(False, self._color_icon)
+            except Exception:
+                pass
         
         self.initial_color = initial_color
         self.result_color = initial_color
@@ -23,8 +38,7 @@ class ColorPickerDialog(tk.Toplevel):
         
         self._parse_color(initial_color)
         self._create_ui()
-        self._update_selector_from_rgb()
-        self._update_preview()
+        self._update_all()
         
         self.bind("<Escape>", lambda e: self._on_cancel())
         self.wait_window()
@@ -40,20 +54,25 @@ class ColorPickerDialog(tk.Toplevel):
             self.g = int(color_str[3:5], 16)
             self.b = int(color_str[5:7], 16)
         else:
-            self.r = self.g = self.b = 0
+            self.r = self.g = self.b = 255
+        
+        self.v = max(self.r, self.g, self.b) / 255.0
     
     def _create_ui(self):
         main_frame = ttk.Frame(self, padding=10)
         main_frame.pack(fill="both", expand=True)
         
+        main_frame.columnconfigure(0, weight=1)
+        
         self._create_color_wheel(main_frame)
+        self._create_brightness_slider(main_frame)
         self._create_rgb_sliders(main_frame)
         self._create_preview(main_frame)
         self._create_buttons(main_frame)
     
     def _create_color_wheel(self, parent):
         frame = ttk.LabelFrame(parent, text="Color Wheel", padding=8)
-        frame.pack(fill="x", pady=(0, 10))
+        frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         
         self.wheel_size = 150
         self.wheel_canvas = tk.Canvas(frame, width=self.wheel_size, height=self.wheel_size, 
@@ -67,6 +86,47 @@ class ColorPickerDialog(tk.Toplevel):
         self.selector_x = self.wheel_size // 2
         self.selector_y = self.wheel_size // 2
         self._draw_selector()
+    
+    def _create_brightness_slider(self, parent):
+        frame = ttk.LabelFrame(parent, text="Brightness", padding=8)
+        frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        
+        self.brightness_var = tk.IntVar(value=100)
+        slider = ttk.Scale(frame, from_=0, to=100, variable=self.brightness_var, orient="horizontal",
+                          command=self._on_brightness_change)
+        slider.pack(side="left", fill="x", expand=True, padx=(0, 10))
+        
+        self.brightness_label = ttk.Label(frame, text="100%", width=5)
+        self.brightness_label.pack(side="left")
+        
+        self.brightness_preview = tk.Canvas(frame, width=20, height=20, highlightthickness=0)
+        self.brightness_preview.pack(side="left", padx=(5, 0))
+        self.brightness_preview.create_oval(1, 1, 19, 19, fill="#FFFFFF", outline="black")
+    
+    def _on_brightness_change(self, val):
+        self.v = int(float(val)) / 100.0
+        self.brightness_label.config(text=f"{int(self.v * 100)}%")
+        
+        h, s, _ = self._rgb_to_hsv(self.r, self.g, self.b)
+        self.r, self.g, self.b = self._hsv_to_rgb(h, s, self.v)
+        
+        self.r_slider["var"].set(self.r)
+        self.r_slider["label"].config(text=str(self.r))
+        self.g_slider["var"].set(self.g)
+        self.g_slider["label"].config(text=str(self.g))
+        self.b_slider["var"].set(self.b)
+        self.b_slider["label"].config(text=str(self.b))
+        
+        self._draw_color_wheel()
+        self._draw_selector()
+        self._update_brightness_preview()
+        self._update_preview()
+    
+    def _update_brightness_preview(self):
+        self.brightness_preview.delete("all")
+        gray = int(255 * self.v)
+        color = f"#{gray:02x}{gray:02x}{gray:02x}"
+        self.brightness_preview.create_oval(1, 1, 19, 19, fill=color, outline="black")
     
     def _draw_color_wheel(self):
         """Draw a smooth color wheel on the canvas."""
@@ -97,7 +157,7 @@ class ColorPickerDialog(tk.Toplevel):
                 center + inner_radius * math.sin(end_rad),
             ]
             
-            color = self._hsv_to_rgb(angle, 1.0, 1.0)
+            color = self._hsv_to_rgb(angle, 1.0, self.v)
             draw.polygon(points, fill=color + (255,), outline=color + (255,))
         
         # Draw white inner circle (center)
@@ -150,7 +210,7 @@ class ColorPickerDialog(tk.Toplevel):
             
             saturation = dist / radius
             
-            self.r, self.g, self.b = self._hsv_to_rgb(angle, saturation, 1.0)
+            self.r, self.g, self.b = self._hsv_to_rgb(angle, saturation, self.v)
             self._update_all()
     
     def _hsv_to_rgb(self, h, s, v):
@@ -180,7 +240,7 @@ class ColorPickerDialog(tk.Toplevel):
     
     def _create_rgb_sliders(self, parent):
         frame = ttk.LabelFrame(parent, text="RGB Sliders", padding=8)
-        frame.pack(fill="x", pady=(0, 10))
+        frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         
         self.r_slider = self._create_slider_row(frame, "R:", self.r, "#FF0000")
         self.g_slider = self._create_slider_row(frame, "G:", self.g, "#00FF00")
@@ -216,6 +276,11 @@ class ColorPickerDialog(tk.Toplevel):
         self.g_slider["label"].config(text=str(self.g))
         self.b_slider["label"].config(text=str(self.b))
         
+        self.v = max(self.r, self.g, self.b) / 255.0
+        self.brightness_var.set(int(self.v * 100))
+        self.brightness_label.config(text=f"{int(self.v * 100)}%")
+        
+        self._draw_color_wheel()
         self._update_selector_from_rgb()
         self._update_preview()
     
@@ -276,17 +341,20 @@ class ColorPickerDialog(tk.Toplevel):
     
     def _create_preview(self, parent):
         frame = ttk.Frame(parent)
-        frame.pack(fill="x", pady=(0, 10))
+        frame.grid(row=3, column=0, sticky="ew", pady=(0, 5))
+        
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
         
         preview_lf = ttk.LabelFrame(frame, text="Preview", padding=8)
-        preview_lf.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        preview_lf.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         
         self.preview_canvas = tk.Canvas(preview_lf, width=40, height=40, highlightthickness=0)
         self.preview_canvas.pack()
         self.preview_canvas.create_oval(2, 2, 38, 38, fill=self._get_hex(), outline="#000000")
         
         hex_lf = ttk.LabelFrame(frame, text="Hex", padding=8)
-        hex_lf.pack(side="left", fill="x", expand=True, padx=(5, 0))
+        hex_lf.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         
         self.hex_var = tk.StringVar(value=self._get_hex())
         hex_entry = ttk.Entry(hex_lf, textvariable=self.hex_var, width=10)
@@ -305,6 +373,8 @@ class ColorPickerDialog(tk.Toplevel):
         
         if hasattr(self, 'hex_var'):
             self.hex_var.set(color)
+        elif not hasattr(self, 'hex_var'):
+            self.hex_var = tk.StringVar(value=color)
     
     def _update_all(self):
         """Update all UI elements from RGB values."""
@@ -317,15 +387,23 @@ class ColorPickerDialog(tk.Toplevel):
         self.b_slider["var"].set(self.b)
         self.b_slider["label"].config(text=str(self.b))
         
+        self.brightness_var.set(int(self.v * 100))
+        self.brightness_label.config(text=f"{int(self.v * 100)}%")
+        
+        self._draw_color_wheel()
         self._update_selector_from_rgb()
+        self._update_brightness_preview()
         self._update_preview()
     
     def _create_buttons(self, parent):
         frame = ttk.Frame(parent)
-        frame.pack(fill="x", pady=(10, 0))
+        frame.grid(row=4, column=0, sticky="ew", pady=(5, 0))
         
-        ttk.Button(frame, text="Apply", command=self._on_apply, width=10).pack(side="left", padx=5)
-        ttk.Button(frame, text="Cancel", command=self._on_cancel, width=10).pack(side="right", padx=5)
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        
+        ttk.Button(frame, text="Apply", command=self._on_apply).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+        ttk.Button(frame, text="Cancel", command=self._on_cancel).grid(row=0, column=1, sticky="ew", padx=(5, 0))
     
     def _on_cancel(self):
         self.result_color = self.initial_color
