@@ -48,16 +48,23 @@ class Screen:
         )
     
     @classmethod
-    def pixels_to_percentages(cls, rect: Tuple[int, int, int, int]) -> Tuple[float, float, float, float]:
-        """Convert pixel coordinates to percentage values (0.0-1.0)."""
+    def pixels_to_percentages(cls, rect: Tuple[int, int, int, int], resolution: Tuple[int, int] = None) -> Tuple[float, float, float, float]:
+        """Convert pixel coordinates to percentage values (0.0-1.0).
+        
+        Args:
+            rect: Tuple of (x, y, w, h) in pixels
+            resolution: Optional (width, height) reference resolution. Uses FRAME_WIDTH/HEIGHT if not provided.
+        """
         x, y, w, h = rect
-        if cls.FRAME_WIDTH == 0 or cls.FRAME_HEIGHT == 0:
+        ref_w = resolution[0] if resolution else cls.FRAME_WIDTH
+        ref_h = resolution[1] if resolution else cls.FRAME_HEIGHT
+        if ref_w == 0 or ref_h == 0:
             return (0, 0, 0, 0)
         return (
-            x / cls.FRAME_WIDTH,
-            y / cls.FRAME_HEIGHT,
-            w / cls.FRAME_WIDTH,
-            h / cls.FRAME_HEIGHT
+            x / ref_w,
+            y / ref_h,
+            w / ref_w,
+            h / ref_h
         )
     
     @classmethod

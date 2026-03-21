@@ -10,7 +10,7 @@ import time
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
-from renderer import Renderer
+from renderer import Renderer, ASSETS_DIR
 from widgets.preview_panel import PreviewPanel
 from video_player import VideoPlayerManager
 from widgets.utils import center_to_parent
@@ -387,29 +387,43 @@ class App(TkinterDnD.Tk):
         self.controls.pack(fill="x", pady=(0, 8))
 
         # ----------------------------
-        # Frame/Bezel selector - auto-discover available bezels
+        # Old Bezel List
+        # (Replaced by Bezel Selector Button below)
         # ----------------------------
-        self.bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
-        
-        # Get saved bezel from config (saved in Misc section)
+        # self.bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
+        # saved_bezel = self.config.get("Misc", "bezel", fallback="")
+        # if saved_bezel and saved_bezel in self.bezel_options:
+        #     default_bezel = saved_bezel
+        # elif "AYN Thor - Rainbow" in self.bezel_options:
+        #     default_bezel = "AYN Thor - Rainbow"
+        # elif self.bezel_options:
+        #     default_bezel = self.bezel_options[0]
+        # else:
+        #     default_bezel = "AYN Thor - Rainbow"
+        # self.bezel_var = StringVar(value=default_bezel)
+        # self.renderer.set_bezel(default_bezel)
+        # max_width = max((len(opt) for opt in self.bezel_options), default=20)
+        # self.bezel_dropdown = ttk.Combobox(
+        #     self.controls,
+        #     textvariable=self.bezel_var,
+        #     values=self.bezel_options,
+        #     state="readonly",
+        #     width=max_width
+        # )
+        # self.bezel_dropdown.pack(side="left", padx=(0, 5))
+        # self.bezel_dropdown.bind("<<ComboboxSelected>>", lambda e: self.change_bezel(self.bezel_var.get()))
+
+        # Initialize bezel_var and load bezel settings
+        # Get first available bezel as default (or saved one from config)
+        bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
         saved_bezel = self.config.get("Misc", "bezel", fallback="")
-        
-        # Determine default bezel:
-        # 1. If saved_bezel is valid, use it
-        # 2. Else if "AYN Thor - Rainbow" exists, use it (default for new users)
-        # 3. Else use first in sorted list
-        if saved_bezel and saved_bezel in self.bezel_options:
+        if saved_bezel and saved_bezel in bezel_options:
             default_bezel = saved_bezel
-        elif "AYN Thor - Rainbow" in self.bezel_options:
-            default_bezel = "AYN Thor - Rainbow"
-        elif self.bezel_options:
-            default_bezel = self.bezel_options[0]
+        elif bezel_options:
+            default_bezel = bezel_options[0]
         else:
-            default_bezel = "AYN Thor - Rainbow"  # Fallback hardcoded default
-        
+            default_bezel = "AYN Thor - Rainbow"
         self.bezel_var = StringVar(value=default_bezel)
-        
-        # Load the default bezel
         self.renderer.set_bezel(default_bezel)
         
         # Sync app grid variables from renderer (in case bezel changed them)
@@ -426,19 +440,16 @@ class App(TkinterDnD.Tk):
         rows, cols = self.zoom_levels[self.zoom_index]
         if hasattr(self.renderer, "set_grid_size"):
             self.renderer.set_grid_size(rows, cols)
-        
-        # Calculate dropdown width based on longest option
-        max_width = max((len(opt) for opt in self.bezel_options), default=20)
-        
-        self.bezel_dropdown = ttk.Combobox(
+
+        # ----------------------------
+        # Bezel Selector Button
+        # ----------------------------
+        self.bezel_selector_btn = ttk.Button(
             self.controls,
-            textvariable=self.bezel_var,
-            values=self.bezel_options,
-            state="readonly",
-            width=max_width
+            text="Bezels",
+            command=self.open_bezel_selector
         )
-        self.bezel_dropdown.pack(side="left", padx=(0, 5))
-        self.bezel_dropdown.bind("<<ComboboxSelected>>", lambda e: self.change_bezel(self.bezel_var.get()))
+        self.bezel_selector_btn.pack(side="left", padx=4)
 
         # ----------------------------
         # Buttons
@@ -570,6 +581,15 @@ class App(TkinterDnD.Tk):
         
         # Start music update timer (for auto-advancing playlist)
         self._schedule_music_update()
+        
+        # Check if initial bezel needs setup (delayed to allow canvas to render first)
+        self.after(200, self._check_initial_bezel_setup)
+    
+    def _check_initial_bezel_setup(self):
+        """Check and prompt for bezel setup if needed on initial load."""
+        if not self.renderer._has_device_config:
+            if self._ask_setup_new_bezel(self.renderer._current_device_folder):
+                self.toggle_bezel_edit_mode()
     
     def _schedule_music_update(self):
         """Schedule periodic music manager updates for auto-advancing playlist."""
@@ -653,24 +673,20 @@ class App(TkinterDnD.Tk):
         self._update_video_positions()
 
     def cycle_bezel(self, event):
-        # Get current index
-        current_index = self.bezel_options.index(self.bezel_var.get())
-        # Move to next index, wrap around
-        next_index = (current_index + 1) % len(self.bezel_options)
-        # Update dropdown and renderer
-        self.bezel_var.set(self.bezel_options[next_index])
-        self.change_bezel(self.bezel_options[next_index])
-        return "break"  # Prevent default tab behavior (focus change)
+        bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
+        current_index = bezel_options.index(self.bezel_var.get())
+        next_index = (current_index + 1) % len(bezel_options)
+        self.bezel_var.set(bezel_options[next_index])
+        self.change_bezel(bezel_options[next_index])
+        return "break"
     
     def cycle_bezel_backward(self, event):
-        # Get current index
-        current_index = self.bezel_options.index(self.bezel_var.get())
-        # Move to previous index, wrap around
-        prev_index = (current_index - 1) % len(self.bezel_options)
-        # Update dropdown and renderer
-        self.bezel_var.set(self.bezel_options[prev_index])
-        self.change_bezel(self.bezel_options[prev_index])
-        return "break"  # Prevent default focus change
+        bezel_options = sorted(self.renderer.BEZEL_OPTIONS.keys())
+        current_index = bezel_options.index(self.bezel_var.get())
+        prev_index = (current_index - 1) % len(bezel_options)
+        self.bezel_var.set(bezel_options[prev_index])
+        self.change_bezel(bezel_options[prev_index])
+        return "break"
     
     def toggle_remember_last_theme(self):
         self.remember_last_theme = self.remember_var.get()
@@ -953,22 +969,13 @@ class App(TkinterDnD.Tk):
             self.bezel_edit_var.set(False)
             self._update_bezel_edit_overlay()
         
-        # Check if device has JSON data
-        filename = self.renderer.BEZEL_INFO.get(selection, ("", "dual"))[0]
-        if filename:
-            parts = filename.split("/")
-            if len(parts) >= 2:
-                device_name = parts[1]
-                if device_name not in self.renderer.DEVICES:
-                    # Ask user if they want to set up the bezel
-                    if not self._ask_setup_new_bezel(device_name):
-                        # User declined - revert to previous bezel
-                        self.bezel_var.set(self.renderer.current_bezel_name)
-                        return
-                    # User wants to set up - will enter bezel edit mode after setting bezel
-                    self._pending_bezel_setup = True
-        
         self.renderer.set_bezel(selection)
+        self.bezel_var.set(selection)
+        
+        # Check if bezel needs setup (no device.json found)
+        if not self.renderer._has_device_config:
+            if self._ask_setup_new_bezel(self.renderer._current_device_folder):
+                self.toggle_bezel_edit_mode()
         
         # This is a band aid solution to fixing the background scroll from freezing on bezel switching.
         # If you can fix it please do <3
@@ -1041,6 +1048,10 @@ class App(TkinterDnD.Tk):
         self._update_single_screen_controls_visibility()
         
         self.canvas.focus_set()
+
+    def open_bezel_selector(self):
+        from widgets.bezel_selector import BezelSelectorDialog
+        BezelSelectorDialog(self, self, self.bezel_var.get())
 
     def _handle_screenshot_click(self, event):
         # 0x0004 = Control key mask in Tkinter
@@ -1922,6 +1933,13 @@ class App(TkinterDnD.Tk):
         if hasattr(self, 'bezel_dropdown'):
             self.bezel_dropdown['values'] = self.bezel_options
         
+        # Refresh bezel selector dialog if open
+        if hasattr(self, 'bezel_selector_dialog') and self.bezel_selector_dialog is not None:
+            try:
+                self.bezel_selector_dialog.refresh_bezel_options()
+            except:
+                self.bezel_selector_dialog = None
+        
         # Reload current theme using full method that handles video setup properly
         self._load_theme_from_path(self.renderer.theme_path, skip_cleanup=False, skip_save=True)
         self.preview_panel.refresh()
@@ -2088,6 +2106,12 @@ class App(TkinterDnD.Tk):
         
         if new_mode:
             # Entering bezel edit mode
+            # Check if device.json exists, if not ask for display name
+            if not self.renderer._has_device_config:
+                display_name = self._ask_bezel_display_name(self.renderer._current_device_folder)
+                if display_name is None:
+                    return  # User cancelled, don't enter edit mode
+                self.renderer._pending_display_name = display_name
             self.renderer.enter_bezel_edit_mode()
             self.bezel_edit_var.set(True)
         else:
@@ -2336,16 +2360,27 @@ class App(TkinterDnD.Tk):
         dialog.transient(self)
         dialog.grab_set()
         
-        dialog.geometry("350x150")
+        dialog.geometry("280x90")
         center_to_parent(dialog, self)
+        
+        icon_path = ASSETS_DIR / "favicon_device.png"
+        if icon_path.exists():
+            try:
+                icon_img = Image.open(icon_path)
+                if icon_img.mode != 'RGBA':
+                    icon_img = icon_img.convert('RGBA')
+                dialog._icon = ImageTk.PhotoImage(icon_img)
+                dialog.iconphoto(False, dialog._icon)
+            except Exception:
+                pass
         
         result = {"setup": False}
         
-        label = tk.Label(dialog, text=f"No configuration found for {device_name}.\nWould you like to set it up this bezel?", pady=15)
-        label.pack()
+        label = tk.Label(dialog, text=f"No configuration found for {device_name}.\nWould you like to setup this bezel?")
+        label.pack(pady=(8, 4))
         
-        button_frame = tk.Frame(dialog)
-        button_frame.pack(pady=15)
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=4)
         
         def on_yes():
             result["setup"] = True
@@ -2355,14 +2390,70 @@ class App(TkinterDnD.Tk):
             result["setup"] = False
             dialog.destroy()
         
-        yes_btn = tk.Button(button_frame, text="Yes", command=on_yes, width=10)
-        yes_btn.pack(side="left", padx=10)
+        yes_btn = ttk.Button(button_frame, text="Yes", command=on_yes)
+        yes_btn.pack(side="left", padx=2)
         
-        no_btn = tk.Button(button_frame, text="No", command=on_no, width=10)
-        no_btn.pack(side="left", padx=10)
+        no_btn = ttk.Button(button_frame, text="No", command=on_no)
+        no_btn.pack(side="left", padx=2)
         
         dialog.wait_window()
         return result["setup"]
+    
+    def _ask_bezel_display_name(self, folder_name: str):
+        """Ask user for a display name when setting up a new bezel without device.json"""
+        dialog = tk.Toplevel(self)
+        dialog.title("Bezel Setup")
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        dialog.geometry("280x110")
+        center_to_parent(dialog, self)
+        
+        icon_path = ASSETS_DIR / "favicon_device.png"
+        if icon_path.exists():
+            try:
+                icon_img = Image.open(icon_path)
+                if icon_img.mode != 'RGBA':
+                    icon_img = icon_img.convert('RGBA')
+                dialog._icon = ImageTk.PhotoImage(icon_img)
+                dialog.iconphoto(False, dialog._icon)
+            except Exception:
+                pass
+        
+        label = tk.Label(dialog, text="Enter a display name for this bezel:")
+        label.pack(pady=(10, 5))
+        
+        entry_var = tk.StringVar(value=folder_name)
+        entry = ttk.Entry(dialog, textvariable=entry_var, width=30)
+        entry.pack(pady=2)
+        entry.select_range(0, tk.END)
+        entry.focus()
+        
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(pady=5)
+        
+        result = {"name": None}
+        
+        def on_ok():
+            name = entry_var.get().strip()
+            if name:
+                result["name"] = name
+            dialog.destroy()
+        
+        def on_cancel():
+            dialog.destroy()
+        
+        ok_btn = ttk.Button(button_frame, text="OK", command=on_ok)
+        ok_btn.pack(side="left", padx=2)
+        
+        cancel_btn = ttk.Button(button_frame, text="Cancel", command=on_cancel)
+        cancel_btn.pack(side="left", padx=2)
+        
+        dialog.bind("<Return>", lambda e: on_ok())
+        dialog.bind("<Escape>", lambda e: on_cancel())
+        
+        dialog.wait_window()
+        return result["name"]
     
     def _create_bezel_edit_controls(self):
         """Create tkinter control widgets for bezel edit mode"""
@@ -3609,6 +3700,8 @@ class App(TkinterDnD.Tk):
                             temp_screens[screen_name]['w'] = screen.w
                             temp_screens[screen_name]['h'] = screen.h
                         
+                        # Apply positions to update Screen.TOP_SCREEN/BOTTOM_SCREEN
+                        renderer._apply_screen_positions(renderer._temp_screens)
                         renderer._invalidate_static_cache()
                         self.redraw()
     

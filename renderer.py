@@ -726,8 +726,12 @@ class Renderer:
             else:
                 device_display_name = folder_name.title()
             
-            # Scan for PNG files in this folder (only images, not json)
-            for f in sorted(folder.glob("*.png")):
+            # Scan for image files in this folder (png, webp)
+            png_files = sorted(folder.glob("*.png"))
+            webp_files = sorted(folder.glob("*.webp"))
+            image_files = png_files + webp_files
+            
+            for f in image_files:
                 # Create display name: "Device Display Name - Image Name"
                 image_name = f.stem.replace("_", " ").title()
                 display_name = f"{device_display_name} - {image_name}"
@@ -748,15 +752,11 @@ class Renderer:
         
         return cls.BEZEL_OPTIONS
     
-    def apply_device_settings(self, device_name: str):
-        """Apply device settings from device.json in the bezel folder"""
+    def apply_device_settings(self, device_name: str) -> bool:
+        """Apply device settings from device.json in the bezel folder.
         
-        # Get frame dimensions from loaded bezel image FIRST (needed for centering)
-        if self.bezel_img:
-            Screen.FRAME_WIDTH = self.bezel_img.width
-            Screen.FRAME_HEIGHT = self.bezel_img.height
-            self.FRAME_WIDTH = Screen.FRAME_WIDTH
-            self.FRAME_HEIGHT = Screen.FRAME_HEIGHT
+        Returns True if device.json was found and loaded, False otherwise.
+        """
         
         # Load device.json from the bezel folder (to pick up external edits)
         device_file = ASSETS_DIR / "bezels" / device_name / "device.json"
@@ -775,11 +775,32 @@ class Renderer:
         else:
             device = None
         
+        # Get reference resolution from device.json, or use current bezel image dimensions
+        if device and "frame_resolution" in device:
+            ref_w = device["frame_resolution"]["width"]
+            ref_h = device["frame_resolution"]["height"]
+        elif self.bezel_img:
+            ref_w = self.bezel_img.width
+            ref_h = self.bezel_img.height
+        else:
+            ref_w = Screen.FRAME_WIDTH
+            ref_h = Screen.FRAME_HEIGHT
+        
+        # Set frame dimensions from loaded bezel image (for centering/rendering)
+        if self.bezel_img:
+            Screen.FRAME_WIDTH = self.bezel_img.width
+            Screen.FRAME_HEIGHT = self.bezel_img.height
+            self.FRAME_WIDTH = Screen.FRAME_WIDTH
+            self.FRAME_HEIGHT = Screen.FRAME_HEIGHT
+        
         if not device:
             print(f"No device config found for '{device_name}', using defaults")
+            self._current_device_folder = device_name
             # Center screens on device canvas as fallback
             self._center_screens_on_device()
-            return
+            return False
+        
+        self._current_device_folder = device_name
         
         # Update screen mode based on screen_amount
         screen_amount = device.get("screen_amount", 2)
@@ -794,27 +815,22 @@ class Renderer:
         self._display_mode = mode
         self.BEZEL_SCREEN_MODE[self.current_bezel_name] = mode
         
-        # Update screen positions - convert pixels to percentages if needed
+        # Update screen positions - convert pixels to percentages using reference resolution
         if "screens" in device:
             screens = device["screens"]
             if "main" in screens:
                 main = screens["main"]
-                # Check if values are pixels (>1.0) or percentages (<=1.0)
                 if main.get("w", 0) > 1.0 or main.get("h", 0) > 1.0:
-                    # Pixel values - convert to percentages
-                    pct = Screen.pixels_to_percentages((main["x"], main["y"], main["w"], main["h"]))
+                    pct = Screen.pixels_to_percentages((main["x"], main["y"], main["w"], main["h"]), (ref_w, ref_h))
                     main["x_pct"] = round(pct[0], 4)
                     main["y_pct"] = round(pct[1], 4)
                     main["w_pct"] = round(pct[2], 4)
                     main["h_pct"] = round(pct[3], 4)
-                else:
-                    # Already percentages or has _pct versions
-                    pass
             
             if "external" in screens:
                 ext = screens["external"]
                 if ext.get("w", 0) > 1.0 or ext.get("h", 0) > 1.0:
-                    pct = Screen.pixels_to_percentages((ext["x"], ext["y"], ext["w"], ext["h"]))
+                    pct = Screen.pixels_to_percentages((ext["x"], ext["y"], ext["w"], ext["h"]), (ref_w, ref_h))
                     ext["x_pct"] = round(pct[0], 4)
                     ext["y_pct"] = round(pct[1], 4)
                     ext["w_pct"] = round(pct[2], 4)
@@ -825,7 +841,6 @@ class Renderer:
             screens = device["screens"]
             if "main" in screens:
                 main = screens["main"]
-                # Use percentage values if available, otherwise use pixel values
                 if "x_pct" in main:
                     px = main.get("x_pct", Screen.TOP_SCREEN_PCT[0])
                     py = main.get("y_pct", Screen.TOP_SCREEN_PCT[1])
@@ -856,25 +871,23 @@ class Renderer:
                 self.screen_manager._update_single_screen_main_position()
                 Screen.TOP_SCREEN = self.screen_manager.main.rect
         
-        # Update app grid settings - convert pixels to percentages if needed
+        # Update app grid settings - convert pixels to percentages using reference resolution
         if "app_grid" in device:
             grid = device["app_grid"]
-            frame_w = Screen.FRAME_WIDTH
-            frame_h = Screen.FRAME_HEIGHT
             
             # Convert pixel values to percentages if needed
             if grid.get("width", 0) > 1.0 or grid.get("height", 0) > 1.0:
-                grid["x_offset_pct"] = round(grid.get("x_offset", 0) / frame_w, 4) if frame_w else 0
-                grid["y_offset_pct"] = round(grid.get("y_offset", -40) / frame_h, 4) if frame_h else 0
-                grid["width_pct"] = round(grid.get("width", 400) / frame_w, 4) if frame_w else 0
-                grid["height_pct"] = round(grid.get("height", 50) / frame_h, 4) if frame_h else 0
+                grid["x_offset_pct"] = round(grid.get("x_offset", 0) / ref_w, 4) if ref_w else 0
+                grid["y_offset_pct"] = round(grid.get("y_offset", -40) / ref_h, 4) if ref_h else 0
+                grid["width_pct"] = round(grid.get("width", 400) / ref_w, 4) if ref_w else 0
+                grid["height_pct"] = round(grid.get("height", 50) / ref_h, 4) if ref_h else 0
             
             # Apply settings - use percentages if available
             if "width_pct" in grid:
-                self.app_grid_x_offset = round(grid.get("x_offset_pct", 0) * frame_w)
-                self.app_grid_y_offset = round(grid.get("y_offset_pct", -0.04) * frame_h)
-                self.app_grid_width = round(grid.get("width_pct", 0.455) * frame_w)
-                self.app_grid_icon_size = round(grid.get("height_pct", 0.048) * frame_h)
+                self.app_grid_x_offset = round(grid.get("x_offset_pct", 0) * Screen.FRAME_WIDTH)
+                self.app_grid_y_offset = round(grid.get("y_offset_pct", -0.04) * Screen.FRAME_HEIGHT)
+                self.app_grid_width = round(grid.get("width_pct", 0.455) * Screen.FRAME_WIDTH)
+                self.app_grid_icon_size = round(grid.get("height_pct", 0.048) * Screen.FRAME_HEIGHT)
             else:
                 self.app_grid_x_offset = grid.get("x_offset", 0)
                 self.app_grid_y_offset = grid.get("y_offset", -40)
@@ -886,6 +899,8 @@ class Renderer:
         # Update screen manager with new dimensions
         self.screen_manager._frame_width = Screen.FRAME_WIDTH
         self.screen_manager._frame_height = Screen.FRAME_HEIGHT
+        
+        return True
     
     def _center_screens_on_device(self):
         """Center screens on device canvas when no device config exists"""
@@ -1015,6 +1030,7 @@ class Renderer:
         self._temp_screen_amount = None
         self._temp_screens = {}
         self._temp_app_grid = {}
+        self._pending_display_name = None  # Clear pending display name on exit
         
         # Restore original frame visibility
         if hasattr(self, '_original_frame_hidden'):
@@ -1275,10 +1291,18 @@ class Renderer:
                        screens.get("external", {}).get("w_pct", 1), screens.get("external", {}).get("h_pct", 1))
             ext_pixel = Screen.percentages_to_pixels(ext_pct)
             
-            display_name = existing_config.get("display_name", device_name.title())
+            # Use pending display name if set (new bezel), otherwise use existing or default
+            if self._pending_display_name:
+                display_name = self._pending_display_name
+            else:
+                display_name = existing_config.get("display_name", device_name.title())
             
             device_config = {
                 "display_name": display_name,
+                "frame_resolution": {
+                    "width": frame_w,
+                    "height": frame_h
+                },
                 "screen_amount": self._get_current_screen_amount(),
                 "screens": {
                     "main": {
@@ -1302,6 +1326,9 @@ class Renderer:
             
             # Also update the in-memory DEVICES dict
             self.DEVICES[device_name] = device_config
+            
+            # Clear pending display name after saving
+            self._pending_display_name = None
             
         except Exception as e:
             print(f"Failed to save device settings: {e}")
@@ -1355,6 +1382,9 @@ class Renderer:
         self._screen_handles = {'main': [], 'external': []}  # Handle positions for drag
         self._grid_handles = []  # Handle positions for grid in bezel edit mode
         self._manual_grid_override = False  # Use manually adjusted grid size from handles
+        self._has_device_config = True  # True if current bezel has device.json
+        self._current_device_folder = ""  # Folder name of current device bezel
+        self._pending_display_name = None  # Display name to use when saving new device.json
         
         # App grid settings (region for 5 evenly spaced app icons)
         self.app_grid_x_offset = 0  # Horizontal offset from center
@@ -1816,13 +1846,12 @@ class Renderer:
             self.bezel_img = self._load_frame(name)
             
             # Apply device settings (reloads device.json from bezel folder)
-            
             # Get folder name from BEZEL_INFO
             bezel_info = self.BEZEL_INFO.get(name, ("", "unknown"))
             folder_name = bezel_info[1] if len(bezel_info) > 1 else "unknown"
             
-            # Apply device settings
-            self.apply_device_settings(folder_name)
+            # Apply device settings - stores _current_device_folder and returns True if config found
+            self._has_device_config = self.apply_device_settings(folder_name)
             
             if self.bezel_img:
                 new_w, new_h = self.bezel_img.size

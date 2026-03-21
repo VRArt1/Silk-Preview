@@ -1,26 +1,22 @@
 {
     "display_name": "RP6",
+    "frame_resolution": {
+        "width": 1583,
+        "height": 638
+    },
     "screen_amount": 1,
     "screens": {
         "main": {
             "x": 44,
             "y": 26,
             "w": 790,
-            "h": 444,
-            "x_pct": 0.0278,
-            "y_pct": 0.0408,
-            "w_pct": 0.4991,
-            "h_pct": 0.6959
+            "h": 444
         },
         "external": {
             "x": 320,
             "y": 63,
             "w": 942,
-            "h": 533,
-            "x_pct": 0.2021,
-            "y_pct": 0.0987,
-            "w_pct": 0.5951,
-            "h_pct": 0.8354
+            "h": 533
         }
     },
     "app_grid": {

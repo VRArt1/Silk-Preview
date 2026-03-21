@@ -99,7 +99,7 @@ class PreviewPanel(ttk.Frame):
             orient="vertical",
             command=self.canvas.yview
         )
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.configure(yscrollcommand=self._on_scroll)
         self.canvas.grid(row=0, column=0, sticky="nsew")
         self.scrollbar.grid(row=0, column=1, sticky="ns")
 
@@ -124,6 +124,13 @@ class PreviewPanel(ttk.Frame):
         bbox = self.canvas.bbox("all")
         if bbox:
             self.canvas.configure(scrollregion=bbox)
+
+    def _on_scroll(self, *args):
+        self.scrollbar.set(*args)
+        if float(args[0]) == 0.0 and float(args[1]) == 1.0:
+            self.scrollbar.grid_remove()
+        else:
+            self.scrollbar.grid(row=0, column=1, sticky="ns")
 
     def _bind_mousewheel(self, widget):
         widget.bind_all("<MouseWheel>", lambda e: self._on_mousewheel(e, widget))
@@ -674,6 +681,7 @@ class PreviewPanel(ttk.Frame):
         
         self._theme_data_hash = new_hash
         self._clear_content()
+        self.canvas.yview_moveto(0)
         
         img = getattr(self.renderer, "preview_image", None)
         if img:

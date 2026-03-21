@@ -1,26 +1,22 @@
 {
     "display_name": "Pocket DS",
+    "frame_resolution": {
+        "width": 1081,
+        "height": 1231
+    },
     "screen_amount": 2,
     "screens": {
         "main": {
             "x": 70,
             "y": 34,
             "w": 940,
-            "h": 531,
-            "x_pct": 0.0648,
-            "y_pct": 0.0276,
-            "w_pct": 0.8696,
-            "h_pct": 0.4314
+            "h": 531
         },
         "external": {
             "x": 232,
             "y": 694,
             "w": 616,
-            "h": 462,
-            "x_pct": 0.2146,
-            "y_pct": 0.5638,
-            "w_pct": 0.5698,
-            "h_pct": 0.3753
+            "h": 462
         }
     },
     "app_grid": {

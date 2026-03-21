@@ -1,26 +1,22 @@
 {
     "display_name": "Odin 3",
+    "frame_resolution": {
+        "width": 1724,
+        "height": 689
+    },
     "screen_amount": 1,
     "screens": {
         "main": {
             "x": 44,
             "y": 26,
             "w": 790,
-            "h": 444,
-            "x_pct": 0.0255,
-            "y_pct": 0.0377,
-            "w_pct": 0.4582,
-            "h_pct": 0.6444
+            "h": 444
         },
         "external": {
             "x": 346,
             "y": 62,
             "w": 1032,
-            "h": 581,
-            "x_pct": 0.2007,
-            "y_pct": 0.09,
-            "w_pct": 0.5986,
-            "h_pct": 0.8433
+            "h": 581
         }
     },
     "app_grid": {

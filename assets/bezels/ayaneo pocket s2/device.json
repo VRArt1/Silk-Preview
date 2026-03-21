@@ -1,5 +1,9 @@
 {
   "display_name": "Pocket S2",
+  "frame_resolution": {
+    "width": 950,
+    "height": 385
+  },
   "screen_amount": 1,
   "screens": {
     "main": {
