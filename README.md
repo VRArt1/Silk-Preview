@@ -10,7 +10,7 @@
 
 *A work-in-progress vibe coded theme previewer for Cocoon FE.*
 
-The intent of this project is to be an accurate theme previewer for the use of general browsing of themes and for aiding in the development of new themes by allowing for more rapid development at your computer without the need to send files to your device. Simply load in your theme folder just as you would on hardware and it'll display as it would natively. As this software is still a work-in-progress not all features have been replicated but a good chunk of them are already in. If you find any bugs please report them through the issues page. If this project is successful of supporting all aspects of Cocoon themes I hope to expand it to include theme editing and creation features.
+The intent of this project is to be an accurate theme previewer for the use of general browsing of themes and for aiding in the development of new themes by allowing for more rapid development at your computer without the need to send files to your device. Simply load in your theme folder just as you would on hardware and it'll display as it would natively. As this software is still a work-in-progress not all features have been replicated but a good chunk of them are already in.
 
 [Features](#features) • [Setup](#setup) • [Support](#support)
 </div>
@@ -18,7 +18,7 @@ The intent of this project is to be an accurate theme previewer for the use of g
 ## Features
 ### Software Specific
 
-- **Theme Edit Mode** Allows for creation of new themes and editing of existing ones. Currently supports editing of theme.json with live preview of compatible fields.
+- **Theme Edit Mode** Allows for creation of new themes and editing of existing ones.
 - **Bezel Edit Mode** Allows for setup of custom bezels using a built in editor. Completed bezels can be shared by sharing the folder containing the images and device.json file. Includes optional magnifier panel.
 - **Screenshots** Allows for screenshots of the device for sharing or use in theme display. Ctrl click for transparent cropped variant.
 - **Remember Last Theme** For ease of development the software can remember and reload into the last opened theme folder.
@@ -27,7 +27,7 @@ The intent of this project is to be an accurate theme previewer for the use of g
 
 ### Cocoon Supported
 
-- **Theme.json + Preview Image** All fields and images populate within the preview panel following the order shown within the wiki. Colors include preview circles and is collapsible .
+- **Theme.json + Preview Image** All fields and images populate within the preview panel following the order shown within the wiki. Colors include preview circles and is collapsible.
 - **Wallpapers** Supports both screens both animated, static, and video. Support for wallpaper aliases and asigning based on theme.json specification.
 - **SFX/BGM**  Supports live preview of select sfx sounds (grid_zoom_in, grid_zoom_out, navigate) and full support for bgm options. Matching music menu controller for controlling live preview.
 - **Smart Folders + Smart Folders/By Platform**  Support for hero, icon, and logo. Properly displayed when selected like on native.
@@ -42,7 +42,7 @@ The intent of this project is to be an accurate theme previewer for the use of g
 
 ### Cocoon Not Supported
 
-- **Theme.json Colors**   
+- **Theme.json Colors Live Preview**   
 - **Hero Masking**  
 - **Hero/Logo Animation**  
 - **Icons On Folders**  

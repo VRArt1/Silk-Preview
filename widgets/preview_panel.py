@@ -47,7 +47,7 @@ class PreviewPanel(ttk.Frame):
         self.grid_propagate(False)
         self.pack_propagate(False)
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
+        self.rowconfigure(1, weight=1)
         
         self._create_ui()
         self.load_theme_info()
@@ -71,21 +71,8 @@ class PreviewPanel(ttk.Frame):
             except:
                 pass
         
-        self.edit_toolbar = ttk.Frame(self)
-        self.edit_toolbar.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 5))
-        self.edit_toolbar.columnconfigure(0, weight=1)
-        self.edit_toolbar.columnconfigure(1, weight=1)
-        
-        self.save_btn = ttk.Button(self.edit_toolbar, text="Save", command=self._save_theme)
-        self.save_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        
-        self.revert_btn = ttk.Button(self.edit_toolbar, text="Revert", command=self._revert_changes)
-        self.revert_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0))
-        
-        self.edit_toolbar.grid_remove()
-        
         self.scroll_container = ttk.Frame(self)
-        self.scroll_container.grid(row=2, column=0, sticky="nsew", padx=6, pady=(0, 10))
+        self.scroll_container.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 10))
         self.scroll_container.columnconfigure(0, weight=1)
         self.scroll_container.rowconfigure(0, weight=1)
 
@@ -117,8 +104,6 @@ class PreviewPanel(ttk.Frame):
             "<Configure>",
             lambda e: self.canvas.itemconfigure(self.content_window, width=e.width)
         )
-
-        self._bind_mousewheel(self.canvas)
     
     def _on_content_configure(self, event):
         bbox = self.canvas.bbox("all")
@@ -132,36 +117,6 @@ class PreviewPanel(ttk.Frame):
         else:
             self.scrollbar.grid(row=0, column=1, sticky="ns")
 
-    def _bind_mousewheel(self, widget):
-        widget.bind_all("<MouseWheel>", lambda e: self._on_mousewheel(e, widget))
-        widget.bind_all("<Button-4>", lambda e: self._on_mousewheel(e, widget))
-        widget.bind_all("<Button-5>", lambda e: self._on_mousewheel(e, widget))
-
-    def _on_mousewheel(self, event, widget):
-        widget_id = widget.winfo_id()
-        try:
-            x, y = event.x_root, event.y_root
-            widget_at_pos = event.widget.winfo_containing(x, y)
-            
-            current = widget_at_pos
-            while current is not None:
-                if current == widget:
-                    break
-                current = current.master
-            else:
-                return
-        except:
-            return
-        
-        scroll_pos = widget.yview()
-        
-        if event.num == 5 or event.delta < 0:
-            if scroll_pos[1] < 1.0:
-                widget.yview_scroll(1, "units")
-        elif event.num == 4 or event.delta > 0:
-            if scroll_pos[0] > 0.0:
-                widget.yview_scroll(-1, "units")
-
     def set_edit_mode(self, enabled):
         """Toggle edit mode."""
         if enabled == self.edit_mode:
@@ -172,11 +127,7 @@ class PreviewPanel(ttk.Frame):
         if enabled:
             self._edit_widgets.clear()
             self._has_unsaved_changes = False
-            self.save_btn.config(state="normal")
-            self.revert_btn.config(state="normal")
-            self.edit_toolbar.grid()
         else:
-            self.edit_toolbar.grid_remove()
             self._edit_widgets.clear()
             self._has_unsaved_changes = False
             self._theme_data_hash = None
@@ -196,12 +147,6 @@ class PreviewPanel(ttk.Frame):
                     return True
                 current = current.master
             
-            current = focus_widget
-            while current is not None:
-                if current == self.edit_toolbar:
-                    return True
-                current = current.master
-                
             return False
         except:
             return False

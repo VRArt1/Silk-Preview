@@ -115,7 +115,7 @@ class FilePickerWidget(ttk.Frame):
             dest_folder = self.theme_path
             if self.relative_folder:
                 dest_folder = self.theme_path / self.relative_folder
-                dest_folder.mkdir(exist_ok=True)
+                dest_folder.mkdir(parents=True, exist_ok=True)
             
             # Determine destination filename
             if self.name_pattern:
@@ -268,9 +268,22 @@ class ColorInputWidget(ttk.Frame):
             return "break"
     
     def _strip_alpha(self, color):
-        """Strip alpha channel from color (convert #RRGGBBAA to #RRGGBB)."""
-        if color and len(color) == 9 and color.startswith("#"):
-            return color[:7]  # Strip last 2 chars (alpha)
+        """Strip alpha channel from color (convert #RRGGBBAA or rgba(r,g,b,a) to #RRGGBB)."""
+        if not color:
+            return color
+        
+        # Handle hex format (#RRGGBBAA)
+        if color.startswith("#") and len(color) == 9:
+            return color[:7]
+        
+        # Handle CSS RGBA format (rgba(r,g,b,a))
+        if color.startswith("rgba(") and color.endswith(")"):
+            inner = color[5:-1]
+            parts = inner.split(",")
+            if len(parts) == 4:
+                r, g, b = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
+        
         return color
     
     def _draw_swatch(self):

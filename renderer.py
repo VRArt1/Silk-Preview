@@ -3064,7 +3064,7 @@ class Renderer:
         if smart_root.exists():
             root_folders = [
                 item for item in smart_root.iterdir()
-                if item.is_dir() and item.name != "by_platform"
+                if item.is_dir() and item.name not in ("by_platform", "_global")
             ]
 
             # Favorites first, others shuffled
@@ -3081,7 +3081,7 @@ class Renderer:
             # Load by-platform smart folders
             by_platform = smart_root / "by_platform"
             if by_platform.exists():
-                platform_dirs = [p for p in by_platform.iterdir() if p.is_dir()]
+                platform_dirs = [p for p in by_platform.iterdir() if p.is_dir() and p.name != "_global"]
                 random.shuffle(platform_dirs)
                 for platform_dir in platform_dirs:
                     if remaining_slots <= 0 or platform_added >= self.MAX_PLATFORM_SMART:
@@ -3092,7 +3092,7 @@ class Renderer:
         icon_dir = self.theme_path / "icon_overlays"
 
         if icon_dir.exists():
-            platform_dirs = [p for p in icon_dir.iterdir() if p.is_dir()]
+            platform_dirs = [p for p in icon_dir.iterdir() if p.is_dir() and p.name != "_global"]
             random.shuffle(platform_dirs)
 
             # Group by base platform name (before first underscore)
@@ -4330,16 +4330,18 @@ class Renderer:
                 if fit_w < main_w:
                     # Would leave gaps, stretch instead
                     wallpaper_resized = main_wallpaper.resize((main_w, main_h), Image.Resampling.BILINEAR)
+                    # No centering needed - stretch fills the screen
+                    masked_wallpaper = Image.composite(wallpaper_resized, Image.new("RGBA", (main_w, main_h), 0), combined_mask)
+                    base.alpha_composite(masked_wallpaper, (main_x, main_y))
                 else:
                     # Fit vertically, center horizontally
                     wallpaper_resized = main_wallpaper.resize((fit_w, main_h), Image.Resampling.BILINEAR)
                     # Resize mask to match wallpaper
-                    combined_mask = combined_mask.resize((fit_w, main_h), Image.Resampling.BILINEAR)
+                    combined_mask_resized = combined_mask.resize((fit_w, main_h), Image.Resampling.BILINEAR)
                     # Adjust x to center the wallpaper in the screen area
-                    main_x = main_x + (main_w - fit_w) // 2
-                
-                masked_wallpaper = Image.composite(wallpaper_resized, Image.new("RGBA", (fit_w, main_h), 0), combined_mask)
-                base.alpha_composite(masked_wallpaper, (main_x, main_y))
+                    paste_x = main_x + (main_w - fit_w) // 2
+                    masked_wallpaper = Image.composite(wallpaper_resized, Image.new("RGBA", (fit_w, main_h), 0), combined_mask_resized)
+                    base.alpha_composite(masked_wallpaper, (paste_x, main_y))
             
             # Draw hero/logo on top of wallpaper in single screen mode
             if top_screen_overlay and self.ss_mask:

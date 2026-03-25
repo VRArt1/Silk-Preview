@@ -1,4 +1,5 @@
 import tkinter as tk
+from pathlib import Path
 import configparser
 from datetime import datetime
 from tkinter import filedialog, StringVar
@@ -181,6 +182,9 @@ class App(TkinterDnD.Tk):
             self.config["Misc"]["editor_panel_width"] = "0"
         self.editor_panel_width = self.config.getint("Misc", "editor_panel_width", fallback=0)
         
+        # last_system_list (for icon overlay editor)
+        self.last_system_list = self.config.get("Misc", "last_system_list", fallback=None)
+        
         # Calculate max values from zoom levels
         self.max_rows_dual = max(r for r, c in self.zoom_levels_dual)
         self.max_cols_dual = max(c for r, c in self.zoom_levels_dual)
@@ -315,9 +319,13 @@ class App(TkinterDnD.Tk):
         style = ttk.Style()
         style.configure("TPanedwindow", sashthickness=8)
         
-        # Editor panel (left side, starts hidden)
-        self.editor_panel = tk.Frame(self.paned, width=0)
+        # Editor panel (left side, for asset editing) - starts hidden
+        from widgets.asset_editor import AssetEditorPanel
+        self.editor_panel = AssetEditorPanel(self.paned, self.renderer, self, self.last_system_list)
         self.paned.add(self.editor_panel, weight=0)
+        
+        # Set up central mousewheel handler
+        self._setup_mousewheel_handler()
         
         # Canvas frame
         self.canvas_frame = tk.Frame(self.paned, bg="#202020")
@@ -346,6 +354,24 @@ class App(TkinterDnD.Tk):
         )
         self.canvas_zoom_out_btn.pack(side="top")
         
+        # Edit mode toolbar (Save/Revert buttons - placed on canvas_frame, hidden by default)
+        self.edit_toolbar_frame = tk.Frame(self.canvas_frame, bg="#2a2a2a")
+        
+        self.edit_save_btn = tk.Button(
+            self.edit_toolbar_frame, text="Save", width=5, height=1, font=("Segoe UI", 9),
+            command=self._on_edit_save, bg="#3a3a3a", fg="white", relief="flat"
+        )
+        self.edit_save_btn.pack(side="left", padx=(0, 2), ipadx=5)
+        
+        self.edit_revert_btn = tk.Button(
+            self.edit_toolbar_frame, text="Revert", width=5, height=1, font=("Segoe UI", 9),
+            command=self._on_edit_revert, bg="#3a3a3a", fg="white", relief="flat"
+        )
+        self.edit_revert_btn.pack(side="left", ipadx=5)
+        
+        self.edit_toolbar_frame.place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne")
+        self.edit_toolbar_frame.place_forget()
+        
         # Bezel Edit Overlay Frame (initially hidden)
         self.bezel_edit_overlay = tk.Frame(self.canvas, bg="#2a2a2a", bd=2, relief="raised")
         self._create_bezel_edit_controls()
@@ -370,7 +396,8 @@ class App(TkinterDnD.Tk):
         # Initialize editor panel width setting if not exists
         if "editor_panel_width" not in self.config["Misc"]:
             self.config["Misc"]["editor_panel_width"] = "0"
-        self.editor_panel_width = self.config.getint("Misc", "editor_panel_width", fallback=0)
+        # Always start with editor panel hidden (theme_edit_var is False at startup)
+        self.editor_panel_width = 0
         
         # Set initial sash positions after window is ready
         self.after(100, self._set_initial_sash_positions)
@@ -472,6 +499,7 @@ class App(TkinterDnD.Tk):
         # Theme Editor buttons - right side, ordered: New Theme, Edit Theme, Edit Bezel, Music, Settings
         # ----------------------------
         self.theme_edit_var = tk.BooleanVar(value=False)
+        self._initializing = True  # Flag to prevent sash resets during startup
         self.theme_edit_btn = ttk.Button(
             self.controls,
             text="Edit Theme",
@@ -587,6 +615,7 @@ class App(TkinterDnD.Tk):
     
     def _check_initial_bezel_setup(self):
         """Check and prompt for bezel setup if needed on initial load."""
+        self._initializing = False  # Mark initialization complete
         if not self.renderer._has_device_config:
             if self._ask_setup_new_bezel(self.renderer._current_device_folder):
                 self.toggle_bezel_edit_mode()
@@ -1375,6 +1404,10 @@ class App(TkinterDnD.Tk):
             # Refresh preview panel
             self.preview_panel.refresh()
             
+            # Refresh asset editor panel if it exists
+            if self.editor_panel is not None and hasattr(self.editor_panel, '_refresh'):
+                self.editor_panel._refresh()
+            
             # Check if there are video wallpapers
             main_screen = self.renderer.screen_manager.main
             external_screen = self.renderer.screen_manager.external
@@ -1761,18 +1794,18 @@ class App(TkinterDnD.Tk):
         self.left_sash_frame.place_forget()
         self.update_idletasks()
         
+        if not self.theme_edit_var.get():
+            return
+        
         sash_x = self.paned.sashpos(0)
         total_height = self.paned.winfo_height()
+        total_width = self.paned.winfo_width()
         
         if total_height > 0 and sash_x >= 0:
             sash_x = max(0, sash_x)
-            self.left_sash_frame.place(x=sash_x, y=0, width=10, height=total_height)
-            
-            for widget in self.left_sash_frame.winfo_children():
-                widget.destroy()
             
             sash_line = tk.Frame(self.left_sash_frame, cursor="sb_h_double_arrow")
-            sash_line.place(relx=0.5, rely=0, width=1, relheight=1, anchor="center")
+            sash_line.place(relx=0.5, rely=0, width=6, relheight=1, anchor="center")
             
             sash_line.bind("<B1-Motion>", self._on_left_sash_drag)
             sash_line.bind("<ButtonRelease-1>", self._on_left_sash_release)
@@ -1780,6 +1813,8 @@ class App(TkinterDnD.Tk):
             self.left_sash_frame.bind("<B1-Motion>", self._on_left_sash_drag)
             self.left_sash_frame.bind("<ButtonRelease-1>", self._on_left_sash_release)
             self.left_sash_frame.bind("<Button-1>", self._on_left_sash_press)
+            
+            self.left_sash_frame.place(x=sash_x, y=0, width=6, height=total_height)
     
     def _set_initial_sash_positions(self):
         """Set the initial sash positions after window is ready."""
@@ -1798,12 +1833,16 @@ class App(TkinterDnD.Tk):
                     sash_pos = max_sash
                 self.paned.sashpos(1, sash_pos)
                 
-                # Set left sash (editor panel)
-                sash_pos = self.editor_panel_width
-                if sash_pos <= 50:
+                # Set left sash (editor panel) - always hidden unless in edit mode
+                if not self.theme_edit_var.get():
                     sash_pos = 0
-                elif sash_pos > total_width - 300:
-                    sash_pos = total_width - 300
+                    self.editor_panel_width = 0
+                else:
+                    sash_pos = self.editor_panel_width
+                    if sash_pos <= 50:
+                        sash_pos = 0
+                    elif sash_pos > total_width - 300:
+                        sash_pos = total_width - 300
                 self.paned.sashpos(0, sash_pos)
                 
                 self._setup_right_sash()
@@ -1849,11 +1888,16 @@ class App(TkinterDnD.Tk):
     # Left sash handlers (between editor panel and canvas)
     def _on_left_sash_press(self, event):
         """Record starting position when left sash is clicked."""
+        if not self.theme_edit_var.get():
+            return
         self._left_sash_anchor_x = event.x_root
     
     def _on_left_sash_drag(self, event):
         """Handle dragging the left sash - same logic as right sash."""
         if not hasattr(self, 'left_sash_frame') or not self.left_sash_frame.winfo_exists():
+            return
+        
+        if not self.theme_edit_var.get():
             return
         
         total_width = self.paned.winfo_width()
@@ -1876,7 +1920,7 @@ class App(TkinterDnD.Tk):
         
         self.paned.sashpos(0, actual_sash)
         sash_x = max(0, actual_sash)
-        self.left_sash_frame.place(x=sash_x, y=0, width=20, height=self.paned.winfo_height())
+        self.left_sash_frame.place(x=sash_x, y=0, width=6, height=self.paned.winfo_height())
     
     def _on_left_sash_release(self, event):
         """Handle left sash release - save position."""
@@ -1894,8 +1938,64 @@ class App(TkinterDnD.Tk):
             self.config["Misc"]["editor_panel_width"] = str(self.editor_panel_width)
             self.save_settings()
     
+    def _setup_mousewheel_handler(self):
+        """Set up a single central mousewheel handler for all panels."""
+        def on_mousewheel(event):
+            x, y = event.x_root, event.y_root
+            
+            if hasattr(self, 'preview_panel') and self.preview_panel.winfo_exists():
+                pp = self.preview_panel
+                pp_x = pp.winfo_rootx()
+                pp_y = pp.winfo_rooty()
+                pp_w = pp.winfo_width()
+                pp_h = pp.winfo_height()
+                
+                if pp_x <= x <= pp_x + pp_w and pp_y <= y <= pp_y + pp_h:
+                    canvas = pp.canvas
+                    scroll_pos = canvas.yview()
+                    if event.delta < 0:
+                        if scroll_pos[1] < 1.0:
+                            canvas.yview_scroll(-1 * (event.delta // 120), "units")
+                    elif event.delta > 0:
+                        if scroll_pos[0] > 0.0:
+                            canvas.yview_scroll(-1 * (event.delta // 120), "units")
+                    return
+            
+            if hasattr(self, 'editor_panel') and self.editor_panel.winfo_exists():
+                ep = self.editor_panel
+                ep_x = ep.winfo_rootx()
+                ep_y = ep.winfo_rooty()
+                ep_w = ep.winfo_width()
+                ep_h = ep.winfo_height()
+                
+                if ep_x <= x <= ep_x + ep_w and ep_y <= y <= ep_y + ep_h:
+                    widget = self.winfo_containing(x, y)
+                    if widget:
+                        current = widget
+                        while current:
+                            if hasattr(current, 'canvas') and hasattr(current, 'winfo_children'):
+                                try:
+                                    canvas = current.canvas
+                                    scroll_pos = canvas.yview()
+                                    if event.delta < 0:
+                                        if scroll_pos[1] < 1.0:
+                                            canvas.yview_scroll(-1 * (event.delta // 120), "units")
+                                    elif event.delta > 0:
+                                        if scroll_pos[0] > 0.0:
+                                            canvas.yview_scroll(-1 * (event.delta // 120), "units")
+                                    return
+                                except:
+                                    pass
+                            current = getattr(current, 'master', None)
+        
+        self.bind_all("<MouseWheel>", on_mousewheel)
+    
     def _on_paned_resize(self, event=None):
         """Handle paned window resize - reposition the visible sashes."""
+        if not self._initializing:
+            if not self.theme_edit_var.get():
+                self.paned.sashpos(0, 0)
+                self.editor_panel_width = 0
         if hasattr(self, 'right_sash_frame') and self.right_sash_frame.winfo_exists():
             self._setup_right_sash()
         if hasattr(self, 'left_sash_frame') and self.left_sash_frame.winfo_exists():
@@ -2142,27 +2242,39 @@ class App(TkinterDnD.Tk):
         
         if new_mode:
             self.theme_edit_var.set(True)
-            self.theme_edit_btn.config(text="Exit Edit")
             self.preview_panel.set_edit_mode(True)
+            self._show_editor_panel()
+            self.edit_toolbar_frame.place(relx=1.0, rely=0.0, x=-10, y=10, anchor="ne")
         else:
             if self.preview_panel.has_unsaved_changes():
                 result = self._ask_apply_or_revert_theme()
                 if result == "apply":
                     self.preview_panel._save_theme()
                     self.theme_edit_var.set(False)
-                    self.theme_edit_btn.config(text="Edit Theme")
                     self.preview_panel.set_edit_mode(False)
+                    self._hide_editor_panel()
+                    self.edit_toolbar_frame.place_forget()
                 elif result == "revert":
                     self.preview_panel._revert_changes()
                     self.theme_edit_var.set(False)
-                    self.theme_edit_btn.config(text="Edit Theme")
                     self.preview_panel.set_edit_mode(False)
+                    self._hide_editor_panel()
+                    self.edit_toolbar_frame.place_forget()
                 else:
                     return
             else:
                 self.theme_edit_var.set(False)
-                self.theme_edit_btn.config(text="Edit Theme")
                 self.preview_panel.set_edit_mode(False)
+                self._hide_editor_panel()
+                self.edit_toolbar_frame.place_forget()
+    
+    def _on_edit_save(self):
+        """Handle Save button click in edit toolbar."""
+        self.preview_panel._save_theme()
+    
+    def _on_edit_revert(self):
+        """Handle Revert button click in edit toolbar."""
+        self.preview_panel._revert_changes()
     
     def _ask_apply_or_revert_theme(self):
         """Ask user whether to apply or revert theme changes"""
@@ -2205,6 +2317,47 @@ class App(TkinterDnD.Tk):
         
         dialog.wait_window()
         return result["action"]
+    
+    def _show_editor_panel(self):
+        """Show the asset editor panel when entering theme edit mode."""
+        self._play_theme_loading_sound()
+        
+        if self.editor_panel_width <= 0:
+            self.editor_panel_width = 300
+        
+        sash_pos = self.editor_panel_width
+        total_width = self.paned.winfo_width()
+        if sash_pos > total_width - 300:
+            sash_pos = max(300, total_width - 300)
+            self.editor_panel_width = sash_pos
+        
+        self.paned.sashpos(0, sash_pos)
+        self.update()
+        
+        self.editor_panel._initialize_content()
+        
+        self._setup_left_sash()
+
+        self.after(50, lambda: self._complete_editor_panel_loading() if hasattr(self.editor_panel, '_refresh') else None)
+    
+    def _complete_editor_panel_loading(self):
+        """Complete the loading sound after editor panel is populated."""
+        self.editor_panel._refresh(force_rescan=True)
+        self._stop_loading_sound_and_play_complete()
+    
+    def _hide_editor_panel(self):
+        """Hide the asset editor panel when exiting theme edit mode."""
+        self.editor_panel_width = self.paned.sashpos(0)
+        if self.editor_panel_width < 50:
+            self.editor_panel_width = 0
+        
+        if hasattr(self, 'left_sash_frame') and self.left_sash_frame.winfo_exists():
+            self.left_sash_frame.unbind_all("<B1-Motion>")
+            self.left_sash_frame.unbind_all("<ButtonRelease-1>")
+            self.left_sash_frame.unbind_all("<Button-1>")
+            self.left_sash_frame.place_forget()
+        
+        self.paned.sashpos(0, 0)
     
     def create_new_theme(self):
         """Create a new theme folder with default structure."""
@@ -2287,8 +2440,9 @@ class App(TkinterDnD.Tk):
                 self._load_theme_from_path(theme_folder)
                 
                 self.theme_edit_var.set(True)
-                self.theme_edit_btn.config(text="Exit Edit")
                 self.preview_panel.set_edit_mode(True)
+                self._show_editor_panel()
+                self.edit_toolbar_frame.place(relx=1.0, rely=0.0, x=-15, y=10, anchor="ne")
                 
                 print(f"Theme '{name}' created successfully at: {theme_folder}")
                 
