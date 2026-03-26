@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, PhotoImage
+from tkinter import ttk, filedialog, messagebox, PhotoImage, BooleanVar
 from PIL import Image, ImageTk
 from pathlib import Path
 import shutil
@@ -865,9 +865,18 @@ class SmartFolderEditor(ttk.Frame):
         self.renderer = asset_panel.renderer
         self.theme_path = asset_panel.theme_path
         self.mode = mode
+        self._toggle_funcs = []
         
         self._create_ui()
         self.refresh()
+    
+    def _toggle_all_folders(self):
+        """Toggle all folders: collapse if any are open, otherwise expand all."""
+        if not self._toggle_funcs:
+            return
+        
+        for toggle_func in self._toggle_funcs:
+            toggle_func()
     
     def _create_ui(self):
         self.columnconfigure(0, weight=1)
@@ -888,6 +897,9 @@ class SmartFolderEditor(ttk.Frame):
         
         self.add_btn = ttk.Button(toolbar, text=f"+ {add_label}", command=self._add_folder)
         self.add_btn.pack(side="left")
+        
+        self.collapse_all_btn = ttk.Button(toolbar, text="Collapse All", command=self._toggle_all_folders)
+        self.collapse_all_btn.pack(side="left", padx=(5, 0))
         
         scroll = ScrollFrame(main_frame)
         scroll.pack(fill="both", expand=True)
@@ -1004,6 +1016,7 @@ class SmartFolderEditor(ttk.Frame):
     
     def refresh(self):
         self.theme_path = self.asset_panel.theme_path
+        self._toggle_funcs = []
         for widget in self.folder_container.winfo_children():
             widget.destroy()
         
@@ -1022,7 +1035,7 @@ class SmartFolderEditor(ttk.Frame):
         if hasattr(parent, 'update_scrollregion'):
             parent.update_scrollregion()
     
-    def _load_thumbnail(self, path, label, size):
+    def _load_thumbnail(self, path, label, size, frame=None):
         """Load and display thumbnail preview on label."""
         try:
             img = Image.open(path).convert("RGBA")
@@ -1030,8 +1043,12 @@ class SmartFolderEditor(ttk.Frame):
             photo = ImageTk.PhotoImage(img)
             label.configure(image=photo, text="")
             label.image = photo
+            if frame:
+                frame.configure(width=size, height=size)
         except Exception:
             label.configure(image="", text="!")
+            if frame:
+                frame.configure(width=size, height=size)
     
     def _create_folder_row(self, folder_data):
         """Create a row for a smart folder.
@@ -1055,38 +1072,133 @@ class SmartFolderEditor(ttk.Frame):
         header = ttk.Frame(frame)
         header.pack(fill="x", padx=2, pady=(0, 2))
         
-        ttk.Label(header, text=folder_name, font=("Segoe UI", 9, "bold")).pack(side="left")
+        expanded = tk.BooleanVar(value=True)
+        
+        collapsed_frame = ttk.Frame(frame)
+        
+        expanded_frame = ttk.Frame(frame)
+        expanded_frame.pack(fill="x", pady=2)
+        
+        def toggle():
+            if expanded.get():
+                expanded_frame.pack_forget()
+                collapsed_frame.pack(fill="x", pady=2)
+                toggle_btn.config(text="▶")
+                expanded.set(False)
+            else:
+                collapsed_frame.pack_forget()
+                expanded_frame.pack(fill="x", pady=2)
+                toggle_btn.config(text="▼")
+                expanded.set(True)
+        
+        self._toggle_funcs.append(toggle)
+        
+        toggle_btn = ttk.Label(header, text="▼", width=2, cursor="hand2")
+        toggle_btn.pack(side="left")
+        toggle_btn.bind("<Button-1>", lambda e: toggle())
+        
+        ttk.Label(header, text=folder_name, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(5, 0))
         
         folder_path_for_btn = folder_path if folder_path else (self.theme_path / "smart_folders" / folder_name)
         ttk.Button(header, text="X", width=2, command=lambda: self._delete_folder(folder_path_for_btn)).pack(side="right")
         
-        assets = {
-            "icon.png": folder_data.get("icon"),
-            "hero.png": folder_data.get("hero"),
-            "logo.png": folder_data.get("logo"),
-        }
+        preview_size = 48
         
-        for asset_name, asset_path in assets.items():
-            asset_frame = ttk.Frame(frame)
-            asset_frame.pack(fill="x", pady=2)
-            
-            preview_size = 48
-            preview_label = tk.Label(asset_frame, width=preview_size, height=preview_size, text="?")
-            preview_label.pack(side="left", padx=(0, 5))
-            
-            if asset_path and asset_path.exists():
-                self._load_thumbnail(asset_path, preview_label, preview_size)
-            
-            picker = FilePickerWidget(
-                asset_frame,
-                theme_path=self.theme_path,
-                relative_folder=f"smart_folders/{folder_name}",
-                allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
-                width=10
-            )
-            if asset_path and asset_path.exists():
-                picker.set_value(asset_name)
-            picker.pack(side="left", fill="x", expand=True)
+        icon_data = folder_data.get("icon")
+        
+        collapsed_preview_frame = ttk.Frame(collapsed_frame, width=preview_size, height=preview_size)
+        collapsed_preview_frame.pack(side="left", padx=(0, 5))
+        collapsed_preview_frame.propagate(False)
+        
+        collapsed_preview_label = ttk.Label(collapsed_preview_frame, text="icon", anchor="center")
+        collapsed_preview_label.pack(fill="both", expand=True)
+        
+        if icon_data and icon_data.exists():
+            self._load_thumbnail(icon_data, collapsed_preview_label, preview_size, collapsed_preview_frame)
+        else:
+            collapsed_preview_frame.configure(width=preview_size, height=preview_size)
+        
+        asset_frame = ttk.Frame(expanded_frame)
+        asset_frame.pack(fill="x", pady=2)
+        
+        preview_frame = ttk.Frame(asset_frame, width=preview_size, height=preview_size)
+        preview_frame.pack(side="left", padx=(0, 5))
+        preview_frame.propagate(False)
+        
+        preview_label = ttk.Label(preview_frame, text="icon", anchor="center")
+        preview_label.pack(fill="both", expand=True)
+        
+        if icon_data and icon_data.exists():
+            self._load_thumbnail(icon_data, preview_label, preview_size, preview_frame)
+        else:
+            preview_frame.configure(width=preview_size, height=preview_size)
+        
+        picker = FilePickerWidget(
+            asset_frame,
+            theme_path=self.theme_path,
+            relative_folder=f"smart_folders/{folder_name}",
+            allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
+            width=10
+        )
+        if icon_data and icon_data.exists():
+            picker.set_value("icon.png")
+        picker.pack(side="left", fill="x", expand=True)
+        
+        hero_data = folder_data.get("hero")
+        
+        hero_frame = ttk.Frame(expanded_frame)
+        hero_frame.pack(fill="x", pady=2)
+        
+        hero_preview_frame = ttk.Frame(hero_frame, width=preview_size, height=preview_size)
+        hero_preview_frame.pack(side="left", padx=(0, 5))
+        hero_preview_frame.propagate(False)
+        
+        hero_preview_label = ttk.Label(hero_preview_frame, text="hero", anchor="center")
+        hero_preview_label.pack(fill="both", expand=True)
+        
+        if hero_data and hero_data.exists():
+            self._load_thumbnail(hero_data, hero_preview_label, preview_size, hero_preview_frame)
+        else:
+            hero_preview_frame.configure(width=preview_size, height=preview_size)
+        
+        hero_picker = FilePickerWidget(
+            hero_frame,
+            theme_path=self.theme_path,
+            relative_folder=f"smart_folders/{folder_name}",
+            allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
+            width=10
+        )
+        if hero_data and hero_data.exists():
+            hero_picker.set_value("hero.png")
+        hero_picker.pack(side="left", fill="x", expand=True)
+        
+        logo_data = folder_data.get("logo")
+        
+        logo_frame = ttk.Frame(expanded_frame)
+        logo_frame.pack(fill="x", pady=2)
+        
+        logo_preview_frame = ttk.Frame(logo_frame, width=preview_size, height=preview_size)
+        logo_preview_frame.pack(side="left", padx=(0, 5))
+        logo_preview_frame.propagate(False)
+        
+        logo_preview_label = ttk.Label(logo_preview_frame, text="logo", anchor="center")
+        logo_preview_label.pack(fill="both", expand=True)
+        
+        if logo_data and logo_data.exists():
+            self._load_thumbnail(logo_data, logo_preview_label, preview_size, logo_preview_frame)
+        else:
+            logo_preview_frame.configure(width=preview_size, height=preview_size)
+        
+        logo_picker = FilePickerWidget(
+            logo_frame,
+            theme_path=self.theme_path,
+            relative_folder=f"smart_folders/{folder_name}",
+            allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
+            width=10
+        )
+        if logo_data and logo_data.exists():
+            logo_picker.set_value("logo.png")
+        logo_picker.pack(side="left", fill="x", expand=True)
     
     def _create_platform_folder_row(self, folder_data):
         folder_name = folder_data.get("name", "unknown")
@@ -1098,38 +1210,133 @@ class SmartFolderEditor(ttk.Frame):
         header = ttk.Frame(frame)
         header.pack(fill="x", padx=2, pady=(0, 2))
         
-        ttk.Label(header, text=folder_name, font=("Segoe UI", 9, "bold")).pack(side="left")
+        expanded = tk.BooleanVar(value=True)
+        
+        collapsed_frame = ttk.Frame(frame)
+        
+        expanded_frame = ttk.Frame(frame)
+        expanded_frame.pack(fill="x", pady=2)
+        
+        def toggle():
+            if expanded.get():
+                expanded_frame.pack_forget()
+                collapsed_frame.pack(fill="x", pady=2)
+                toggle_btn.config(text="▶")
+                expanded.set(False)
+            else:
+                collapsed_frame.pack_forget()
+                expanded_frame.pack(fill="x", pady=2)
+                toggle_btn.config(text="▼")
+                expanded.set(True)
+        
+        self._toggle_funcs.append(toggle)
+        
+        toggle_btn = ttk.Label(header, text="▼", width=2, cursor="hand2")
+        toggle_btn.pack(side="left")
+        toggle_btn.bind("<Button-1>", lambda e: toggle())
+        
+        ttk.Label(header, text=folder_name, font=("Segoe UI", 9, "bold")).pack(side="left", padx=(5, 0))
         
         folder_path_for_btn = folder_path if folder_path else (self.theme_path / "smart_folders" / "by_platform" / folder_name)
         ttk.Button(header, text="X", width=2, command=lambda: self._delete_folder(folder_path_for_btn)).pack(side="right")
         
-        assets = {
-            "icon.png": folder_data.get("icon"),
-            "hero.png": folder_data.get("hero"),
-            "logo.png": folder_data.get("logo"),
-        }
+        preview_size = 48
         
-        for asset_name, asset_path in assets.items():
-            asset_frame = ttk.Frame(frame)
-            asset_frame.pack(fill="x", pady=2)
-            
-            preview_size = 48
-            preview_label = tk.Label(asset_frame, width=preview_size, height=preview_size, text="?")
-            preview_label.pack(side="left", padx=(0, 5))
-            
-            if asset_path and asset_path.exists():
-                self._load_thumbnail(asset_path, preview_label, preview_size)
-            
-            picker = FilePickerWidget(
-                asset_frame,
-                theme_path=self.theme_path,
-                relative_folder=f"smart_folders/by_platform/{folder_name}",
-                allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
-                width=10
-            )
-            if asset_path and asset_path.exists():
-                picker.set_value(asset_name)
-            picker.pack(side="left", fill="x", expand=True)
+        icon_data = folder_data.get("icon")
+        
+        collapsed_preview_frame = ttk.Frame(collapsed_frame, width=preview_size, height=preview_size)
+        collapsed_preview_frame.pack(side="left", padx=(0, 5))
+        collapsed_preview_frame.propagate(False)
+        
+        collapsed_preview_label = ttk.Label(collapsed_preview_frame, text="icon", anchor="center")
+        collapsed_preview_label.pack(fill="both", expand=True)
+        
+        if icon_data and icon_data.exists():
+            self._load_thumbnail(icon_data, collapsed_preview_label, preview_size, collapsed_preview_frame)
+        else:
+            collapsed_preview_frame.configure(width=preview_size, height=preview_size)
+        
+        asset_frame = ttk.Frame(expanded_frame)
+        asset_frame.pack(fill="x", pady=2)
+        
+        preview_frame = ttk.Frame(asset_frame, width=preview_size, height=preview_size)
+        preview_frame.pack(side="left", padx=(0, 5))
+        preview_frame.propagate(False)
+        
+        preview_label = ttk.Label(preview_frame, text="icon", anchor="center")
+        preview_label.pack(fill="both", expand=True)
+        
+        if icon_data and icon_data.exists():
+            self._load_thumbnail(icon_data, preview_label, preview_size, preview_frame)
+        else:
+            preview_frame.configure(width=preview_size, height=preview_size)
+        
+        picker = FilePickerWidget(
+            asset_frame,
+            theme_path=self.theme_path,
+            relative_folder=f"smart_folders/by_platform/{folder_name}",
+            allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
+            width=10
+        )
+        if icon_data and icon_data.exists():
+            picker.set_value("icon.png")
+        picker.pack(side="left", fill="x", expand=True)
+        
+        hero_data = folder_data.get("hero")
+        
+        hero_frame = ttk.Frame(expanded_frame)
+        hero_frame.pack(fill="x", pady=2)
+        
+        hero_preview_frame = ttk.Frame(hero_frame, width=preview_size, height=preview_size)
+        hero_preview_frame.pack(side="left", padx=(0, 5))
+        hero_preview_frame.propagate(False)
+        
+        hero_preview_label = ttk.Label(hero_preview_frame, text="hero", anchor="center")
+        hero_preview_label.pack(fill="both", expand=True)
+        
+        if hero_data and hero_data.exists():
+            self._load_thumbnail(hero_data, hero_preview_label, preview_size, hero_preview_frame)
+        else:
+            hero_preview_frame.configure(width=preview_size, height=preview_size)
+        
+        hero_picker = FilePickerWidget(
+            hero_frame,
+            theme_path=self.theme_path,
+            relative_folder=f"smart_folders/by_platform/{folder_name}",
+            allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
+            width=10
+        )
+        if hero_data and hero_data.exists():
+            hero_picker.set_value("hero.png")
+        hero_picker.pack(side="left", fill="x", expand=True)
+        
+        logo_data = folder_data.get("logo")
+        
+        logo_frame = ttk.Frame(expanded_frame)
+        logo_frame.pack(fill="x", pady=2)
+        
+        logo_preview_frame = ttk.Frame(logo_frame, width=preview_size, height=preview_size)
+        logo_preview_frame.pack(side="left", padx=(0, 5))
+        logo_preview_frame.propagate(False)
+        
+        logo_preview_label = ttk.Label(logo_preview_frame, text="logo", anchor="center")
+        logo_preview_label.pack(fill="both", expand=True)
+        
+        if logo_data and logo_data.exists():
+            self._load_thumbnail(logo_data, logo_preview_label, preview_size, logo_preview_frame)
+        else:
+            logo_preview_frame.configure(width=preview_size, height=preview_size)
+        
+        logo_picker = FilePickerWidget(
+            logo_frame,
+            theme_path=self.theme_path,
+            relative_folder=f"smart_folders/by_platform/{folder_name}",
+            allowed_extensions=[".png", ".jpg", ".jpeg", ".gif", ".webp"],
+            width=10
+        )
+        if logo_data and logo_data.exists():
+            logo_picker.set_value("logo.png")
+        logo_picker.pack(side="left", fill="x", expand=True)
 
 
 class SmartFolderDialog(tk.Toplevel):
