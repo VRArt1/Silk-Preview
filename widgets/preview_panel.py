@@ -494,12 +494,20 @@ class PreviewPanel(ttk.Frame):
             # Normalize types for comparison consistency
             if isinstance(value, str):
                 stripped = value.strip()
-                # Convert numeric strings to floats (JSON numbers are floats)
-                try:
-                    if '.' in stripped or (stripped.lstrip('-').isdigit() and stripped):
-                        value = float(stripped)
-                except (ValueError, AttributeError):
-                    pass  # Keep as string
+                # Skip hex color strings from numeric conversion
+                # Colors can be: #RRGGBB, #RRGGBBAA, RRGGBB, RRGGBBAA (6 or 8 hex chars)
+                import re
+                is_hex_color = bool(re.match(r'^#?[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$', stripped))
+                
+                if is_hex_color:
+                    value = stripped if stripped.startswith('#') else f"#{stripped}"
+                elif stripped:
+                    # Convert numeric strings to floats (JSON numbers are floats)
+                    try:
+                        if '.' in stripped or (stripped.lstrip('-').isdigit() and stripped):
+                            value = float(stripped)
+                    except (ValueError, AttributeError):
+                        pass  # Keep as string
             
             if isinstance(value, dict):
                 nested = self._clean_theme_data(value)
